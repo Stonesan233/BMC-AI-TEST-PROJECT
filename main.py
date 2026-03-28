@@ -108,7 +108,7 @@ def generate_execution_id() -> str:
 #   2. Exec Agent 内部处理批量执行 + RAG
 #   3. 返回 ExecutionRecord 列表
 #
-# 当前为占位实现，返回模拟数据
+# 当前为占位实现：基于用例中的步骤定义构建模拟 ExecutionRecord
 # ============================================================
 async def call_exec_agent_batch(
     batch: List[Dict[str, Any]],
@@ -128,23 +128,13 @@ async def call_exec_agent_batch(
     for case in batch:
         execution_id = generate_execution_id()
         now = datetime.now()
+        case_steps = case.get("测试步骤", [])
 
-        mock_step = StepRecord(
-            step_id="step_001",
-            description="模拟步骤：查询 BMC 信息",
-            tool="redfish",
-            interface_preference="redfish",
-            endpoint="/redfish/v1",
-            method="GET",
-            expected="HTTP 200",
-            actual="HTTP 200",
-            raw_stdout='{"@odata.type": "#Service.v1_0_0.Service", "ServiceVersion": "1.0.0"}',
-            raw_stderr="",
-            evidence=[],
-            status=StepStatus.COMPLETED,
-            started_at=now,
-            completed_at=now,
-        )
+        # 如果用例有步骤定义，基于它构建模拟记录；否则用默认步骤
+        if case_steps:
+            steps = _build_mock_steps_from_case(case_steps, now)
+        else:
+            steps = _build_default_mock_steps(now)
 
         record = ExecutionRecord(
             execution_id=execution_id,
@@ -156,15 +146,14 @@ async def call_exec_agent_batch(
             },
             test_case_info={
                 "source_path": case.get("_source_path", ""),
+                "测试类型": case.get("测试类型", ""),
+                "优先级": case.get("优先级", ""),
             },
             prerequisites=[
-                {
-                    "name": "BMC 网络可达",
-                    "status": "completed",
-                    "details": "模拟：BMC 响应正常",
-                }
+                {"name": "BMC 网络可达", "status": "completed", "details": "模拟：BMC 响应正常"},
+                {"name": "Administrator 账户登录", "status": "completed", "details": "模拟：认证成功"},
             ],
-            steps=[mock_step],
+            steps=steps,
             started_at=now,
             completed_at=now,
             overall_status="completed",
@@ -172,6 +161,130 @@ async def call_exec_agent_batch(
         records.append(record)
 
     return records
+
+
+def _build_mock_steps_from_case(
+    case_steps: List[Dict[str, Any]],
+    base_time: datetime,
+) -> List[StepRecord]:
+    """基于用例步骤定义构建模拟 StepRecord 列表"""
+    steps = []
+    for i, cs in enumerate(case_steps):
+        step_id = cs.get("step_id", f"step_{i+1:03d}")
+        desc = cs.get("description", f"步骤 {i+1}")
+        iface = cs.get("interface_preference", "redfish")
+        tool = iface if iface in ("redfish", "cli", "ipmi", "ssh") else "redfish"
+        expected = cs.get("expected", "执行成功")
+
+        # 模拟 Redfish 响应
+        stdout, stderr, http_status = _mock_response_for_step(cs, iface)
+
+        evidence = [
+            Evidence(
+                evidence_id=f"{step_id}_evidence_001",
+                step_id=step_id,
+                evidence_type=f"{iface}_response",
+                content=stdout,
+                metadata={"http_status": http_status} if http_status else {},
+                captured_at=base_time,
+            )
+        ]
+
+        step = StepRecord(
+            step_id=step_id,
+            description=desc,
+            tool=tool,
+            interface_preference=iface,
+            endpoint=cs.get("endpoint"),
+            method=cs.get("method"),
+            command=cs.get("command"),
+            expected=str(expected),
+            actual="模拟执行成功" if not stderr else f"模拟执行异常: {stderr[:80]}",
+            raw_stdout=stdout,
+            raw_stderr=stderr,
+            evidence=evidence,
+            status=StepStatus.COMPLETED if not stderr else StepStatus.FAILED,
+            http_status=http_status,
+            started_at=base_time,
+            completed_at=base_time,
+        )
+        steps.append(step)
+    return steps
+
+
+def _mock_response_for_step(
+    cs: Dict[str, Any], iface: str
+) -> tuple:
+    """根据步骤接口类型返回模拟的 (stdout, stderr, http_status)"""
+    if iface == "redfish":
+        endpoint = cs.get("endpoint", "")
+        method = cs.get("method", "GET").upper()
+        if "AccountService/Accounts" in endpoint and method == "GET":
+            stdout = (
+                '{"@odata.type": "#AccountService.AccountService", '
+                '"@odata.id": "/redfish/v1/AccountService/Accounts", '
+                '"Members": ['
+                '{"@odata.id": "/redfish/v1/AccountService/Accounts/2"}'
+                '], '
+                '"Members@odata.count": 1}'
+            )
+        elif "AccountService/Accounts" in endpoint and method == "POST":
+            stdout = (
+                '{"@odata.type": "#AccountService.AccountService", '
+                '"@MessageId": "Base.1.0.Success", '
+                '"Message": "The resource has been created successfully."}'
+            )
+        else:
+            stdout = (
+                '{"@odata.type": "#Service.v1_0_0.Service", '
+                '"ServiceVersion": "1.0.0", '
+                '"Status": {"Health": "OK", "State": "Enabled"}}'
+            )
+        return stdout, "", 200
+    elif iface == "cli":
+        stdout = "Success: operation completed."
+        return stdout, "", None
+    elif iface == "ipmi":
+        stdout = "Command completed successfully."
+        return stdout, "", None
+    else:
+        return "unknown interface", "", None
+
+
+def _build_default_mock_steps(base_time: datetime) -> List[StepRecord]:
+    """无步骤定义时使用默认模拟步骤"""
+    return [
+        StepRecord(
+            step_id="step_001",
+            description="查询 BMC 服务版本",
+            tool="redfish",
+            interface_preference="redfish",
+            endpoint="/redfish/v1",
+            method="GET",
+            expected="HTTP 200, 返回 ServiceVersion",
+            actual="HTTP 200",
+            raw_stdout=(
+                '{"@odata.type": "#Service.v1_0_0.Service", '
+                '"ServiceVersion": "1.0.0", '
+                '"Status": {"Health": "OK", "State": "Enabled"}}'
+            ),
+            raw_stderr="",
+            evidence=[
+                Evidence(
+                    evidence_id="step_001_evidence_001",
+                    step_id="step_001",
+                    evidence_type="redfish_response",
+                    content='{"@odata.type": "#Service.v1_0_0.Service", "ServiceVersion": "1.0.0"}',
+                    metadata={"http_status": 200},
+                    captured_at=base_time,
+                )
+            ],
+            status=StepStatus.COMPLETED,
+            http_status=200,
+            started_at=base_time,
+            completed_at=base_time,
+        ),
+    ]
 
 
 # ============================================================
@@ -182,7 +295,7 @@ async def call_exec_agent_batch(
 # 功能描述：
 #   对单个 ExecutionRecord 进行严格判断
 #
-# 当前为占位实现，返回模拟数据
+# 当前为占位实现：基于 ExecutionRecord 中的步骤构建模拟判断结果
 # ============================================================
 async def call_judge_agent(
     execution_record: ExecutionRecord,
@@ -199,22 +312,45 @@ async def call_judge_agent(
     """
     print(f"[TODO] 调用 Test_Judge Agent: {execution_record.execution_id}")
 
-    mock_judgment = StepJudgment(
-        step_id="step_001",
-        result="PASS",
-        confidence=0.90,
-        reason="模拟判断：步骤执行成功，响应符合预期",
-        expected_match=True,
-        concerns=[],
-    )
+    # 基于 ExecutionRecord 中的实际步骤构建判断
+    step_judgments = []
+    all_pass = True
+    for step in execution_record.steps:
+        is_pass = step.status == StepStatus.COMPLETED
+        if not is_pass:
+            all_pass = False
+
+        judgment = StepJudgment(
+            step_id=step.step_id,
+            result="PASS" if is_pass else "FAIL",
+            confidence=0.90 if is_pass else 0.60,
+            reason=(
+                f"模拟判断：步骤 '{step.description}' 执行完成"
+                if is_pass
+                else f"模拟判断：步骤 '{step.description}' 执行失败"
+            ),
+            expected_match=is_pass,
+            concerns=[] if is_pass else ["步骤状态异常，需人工复核"],
+        )
+        step_judgments.append(judgment)
+
+    # 构建判断说明
+    judge_notes = []
+    pass_count = sum(1 for j in step_judgments if j.result == "PASS")
+    judge_notes.append(f"共 {len(step_judgments)} 个步骤，{pass_count} 个通过")
+    if all_pass:
+        judge_notes.append("所有步骤执行成功，预期与实际匹配")
+    else:
+        judge_notes.append("存在失败步骤，需人工复核")
+    judge_notes.append("(当前为模拟判断，未来由 Judge Agent 严格验证)")
 
     result = TestResult(
         execution_id=execution_record.execution_id,
         case_id=execution_record.case_id,
         case_name=execution_record.case_name,
-        overall_result="PASS",
-        confidence=0.85,
-        step_results=[mock_judgment],
+        overall_result="PASS" if all_pass else "FAIL",
+        confidence=0.90 if all_pass else 0.60,
+        step_results=step_judgments,
         prerequisite_check={
             "result": "PASS",
             "failed_items": [],
@@ -223,7 +359,7 @@ async def call_judge_agent(
             "recovered": True,
             "warnings": [],
         },
-        judge_notes=["模拟判断结果：所有步骤通过"],
+        judge_notes=judge_notes,
     )
 
     return result
