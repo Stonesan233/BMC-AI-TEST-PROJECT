@@ -2,13 +2,15 @@
 """
 openUBMC AI 测试框架 - 文件处理工具模块
 
-提供共享目录管理、执行记录保存、测试结果保存、人可读报告生成等功能。
+负责文件读写和报告生成，是主流程打通的关键模块。
 """
 
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict, List, Any, Optional
+
+from src.core.schemas import ExecutionRecord, TestResult, Evidence
 
 
 # ============================================================
@@ -22,7 +24,7 @@ def ensure_shared_dirs(shared_dir: str) -> None:
     创建以下子目录：
     - execution_records/ : ExecutionRecord JSON 文件
     - test_results/      : TestResult JSON 文件
-    - evidence/          : 证据文件
+    - evidence/          : 证据文件（按 execution_id 组织）
     - reports/           : Markdown 报告
 
     Args:
@@ -36,47 +38,110 @@ def ensure_shared_dirs(shared_dir: str) -> None:
 
 
 # ============================================================
-# JSON 文件保存
+# ExecutionRecord 保存
 # ============================================================
 
-def save_execution_record(record: Dict[str, Any], shared_dir: str) -> str:
+def save_execution_record(record: ExecutionRecord, shared_dir: str) -> str:
     """
-    保存 ExecutionRecord 到 JSON 文件。
+    保存 ExecutionRecord 到 JSON 文件，并导出证据文件。
+
+    保存路径：
+    - JSON: {shared_dir}/execution_records/{execution_id}.json
+    - 证据: {shared_dir}/evidence/{execution_id}/{evidence_id}.txt
 
     Args:
-        record: ExecutionRecord 字典
+        record: ExecutionRecord 对象
         shared_dir: 共享目录根路径
 
     Returns:
-        保存的文件路径
+        保存的 JSON 文件路径
     """
-    execution_id = record.get("execution_id", "unknown")
-    file_path = Path(shared_dir) / "execution_records" / f"{execution_id}.json"
+    root = Path(shared_dir)
+    execution_id = record.execution_id
 
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(record, f, ensure_ascii=False, indent=2, default=str)
+    # 保存 JSON 文件
+    json_path = root / "execution_records" / f"{execution_id}.json"
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(record.model_dump(mode="json"), f, ensure_ascii=False, indent=2, default=str)
+    print(f"[OK] ExecutionRecord 已保存: {json_path}")
 
-    return str(file_path)
+    # 导出证据文件
+    evidence_dir = root / "evidence" / execution_id
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+
+    for step in record.steps:
+        for evidence in step.evidence:
+            _save_evidence_file(evidence, evidence_dir)
+
+    return str(json_path)
 
 
-def save_test_result(result: Dict[str, Any], shared_dir: str) -> str:
+def _save_evidence_file(evidence: Evidence, evidence_dir: Path) -> None:
+    """
+    保存单个证据文件（内部函数）。
+
+    只保存文本类型的证据，二进制证据暂不处理。
+    """
+    # 判断是否为文本内容
+    content = evidence.content
+    if not content or not isinstance(content, str):
+        return
+
+    # 跳过过长的内容（超过 100KB）
+    if len(content) > 100 * 1024:
+        print(f"[WARN] 证据内容过长，跳过保存: {evidence.evidence_id}")
+        return
+
+    # 保存证据文件
+    ext = _get_evidence_extension(evidence.evidence_type)
+    file_path = evidence_dir / f"{evidence.evidence_id}{ext}"
+
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"[OK] 证据已保存: {file_path.name}")
+    except Exception as e:
+        print(f"[WARN] 证据保存失败: {evidence.evidence_id} - {e}")
+
+
+def _get_evidence_extension(evidence_type: str) -> str:
+    """根据证据类型获取文件扩展名"""
+    type_map = {
+        "redfish_response": ".json",
+        "cli_output": ".txt",
+        "ipmi_output": ".txt",
+        "ssh_output": ".txt",
+        "http_response": ".json",
+    }
+    return type_map.get(evidence_type, ".txt")
+
+
+# ============================================================
+# TestResult 保存
+# ============================================================
+
+def save_test_result(result: TestResult, shared_dir: str) -> str:
     """
     保存 TestResult 到 JSON 文件。
 
+    保存路径：{shared_dir}/test_results/{execution_id}.json
+
     Args:
-        result: TestResult 字典
+        result: TestResult 对象
         shared_dir: 共享目录根路径
 
     Returns:
         保存的文件路径
     """
-    execution_id = result.get("execution_id", "unknown")
-    file_path = Path(shared_dir) / "test_results" / f"{execution_id}.json"
+    root = Path(shared_dir)
+    execution_id = result.execution_id
+    json_path = root / "test_results" / f"{execution_id}.json"
 
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2, default=str)
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(result.model_dump(mode="json"), f, ensure_ascii=False, indent=2, default=str)
 
-    return str(file_path)
+    print(f"[OK] TestResult 已保存: {json_path}")
+    return str(json_path)
 
 
 # ============================================================
@@ -84,39 +149,46 @@ def save_test_result(result: Dict[str, Any], shared_dir: str) -> str:
 # ============================================================
 
 def generate_human_report(
-    execution_record: Dict[str, Any],
-    test_result: Dict[str, Any],
+    execution_record: ExecutionRecord,
+    test_result: TestResult,
     shared_dir: str
 ) -> str:
     """
     生成人可读的 Markdown 测试报告。
 
+    保存路径：{shared_dir}/reports/{execution_id}.md
+
     报告结构：
-    1. 标题和基本信息
-    2. 环境信息
-    3. 预置条件检查结果
-    4. 步骤执行详情（含 raw_stdout 和 raw_stderr）
-    5. 判断结果
+    1. 标题：测试报告 - {case_name}
+    2. 执行基本信息（ID、时间、总体结果）
+    3. 环境信息（过滤密码字段）
+    4. 预置条件检查结果
+    5. 步骤详情（含 raw_stdout、raw_stderr）
+    6. 判断结果和 judge_notes
+    7. 生成时间
 
     Args:
-        execution_record: ExecutionRecord 字典
-        test_result: TestResult 字典
+        execution_record: ExecutionRecord 对象
+        test_result: TestResult 对象
         shared_dir: 共享目录根路径
 
     Returns:
         报告文件路径
     """
-    execution_id = execution_record.get("execution_id", "unknown")
-    report_path = Path(shared_dir) / "reports" / f"{execution_id}.md"
+    root = Path(shared_dir)
+    execution_id = execution_record.execution_id
+    report_path = root / "reports" / f"{execution_id}.md"
 
     lines = []
 
     # ---------- 标题 ----------
-    case_name = execution_record.get("case_name", "未知用例")
-    overall_result = test_result.get("overall_result", "-")
-    result_icon = "[PASS]" if overall_result == "PASS" else "[FAIL]"
+    case_name = execution_record.case_name
+    overall_result = test_result.overall_result
+    result_mark = "**[PASS]**" if overall_result == "PASS" else "**[FAIL]**"
 
-    lines.append(f"# {result_icon} 测试报告: {case_name}")
+    lines.append(f"# 测试报告: {case_name}")
+    lines.append("")
+    lines.append(f"整体结果: {result_mark}")
     lines.append("")
 
     # ---------- 基本信息 ----------
@@ -124,25 +196,25 @@ def generate_human_report(
     lines.append("")
     lines.append(f"| 项目 | 值 |")
     lines.append("|------|-----|")
-    lines.append(f"| 用例 ID | `{execution_record.get('case_id', '-')}` |")
+    lines.append(f"| 用例 ID | `{execution_record.case_id}` |")
     lines.append(f"| 用例名称 | {case_name} |")
     lines.append(f"| 执行 ID | `{execution_id}` |")
-    lines.append(f"| 整体结果 | **{overall_result}** |")
-    lines.append(f"| 置信度 | {test_result.get('confidence', '-'):.2f} |")
-    lines.append(f"| 开始时间 | {execution_record.get('started_at', '-')} |")
-    lines.append(f"| 完成时间 | {execution_record.get('completed_at', '-')} |")
+    lines.append(f"| 整体结果 | {overall_result} |")
+    lines.append(f"| 置信度 | {test_result.confidence:.2f} |")
+    lines.append(f"| 开始时间 | {_format_time(execution_record.started_at)} |")
+    lines.append(f"| 完成时间 | {_format_time(execution_record.completed_at)} |")
     lines.append("")
 
     # ---------- 环境信息 ----------
     lines.append("## 环境信息")
     lines.append("")
-    env = execution_record.get("environment", {})
+    env = execution_record.environment
     if env:
         lines.append(f"| 配置项 | 值 |")
         lines.append("|--------|-----|")
         for key, value in env.items():
             # 敏感信息脱敏
-            if "password" in key.lower() or "pwd" in key.lower():
+            if _is_sensitive_field(key):
                 value = "******"
             lines.append(f"| {key} | `{value}` |")
         lines.append("")
@@ -153,109 +225,96 @@ def generate_human_report(
     # ---------- 预置条件检查 ----------
     lines.append("## 预置条件检查")
     lines.append("")
-    prerequisites = execution_record.get("prerequisites", [])
+    prerequisites = execution_record.prerequisites
     if prerequisites:
         lines.append(f"| 条件 | 状态 | 详情 |")
         lines.append("|------|------|------|")
         for prereq in prerequisites:
             name = prereq.get("name", "-")
             status = prereq.get("status", "-")
-            status_icon = "[OK]" if status == "completed" else "[FAIL]"
             details = prereq.get("details", "-")
-            lines.append(f"| {name} | {status_icon} {status} | {details} |")
+            status_mark = "[OK]" if status == "completed" else "[FAIL]"
+            lines.append(f"| {name} | {status_mark} {status} | {details} |")
         lines.append("")
     else:
         lines.append("_无预置条件_")
         lines.append("")
 
-    # ---------- 步骤执行详情 ----------
+    # ---------- 步骤执行详情（核心部分）----------
     lines.append("## 步骤执行详情")
     lines.append("")
 
-    steps = execution_record.get("steps", [])
-    step_results = {sr.get("step_id"): sr for sr in test_result.get("step_results", [])}
+    # 构建步骤判断结果映射
+    step_judgments = {sr.step_id: sr for sr in test_result.step_results}
 
-    for step in steps:
-        step_id = step.get("step_id", "-")
-        description = step.get("description", "-")
-        tool = step.get("tool", "-")
-        status = step.get("status", "-")
-        status_icon = "[OK]" if status == "completed" else "[FAIL]"
-
-        # 步骤标题
-        lines.append(f"### Step {step_id}: {description}")
+    for step in execution_record.steps:
+        lines.append(f"### Step {step.step_id}: {step.description}")
         lines.append("")
 
         # 步骤元信息
-        lines.append(f"- **工具**: `{tool}`")
-        lines.append(f"- **状态**: {status_icon} {status}")
+        status_mark = "[OK]" if step.status.value == "completed" else "[FAIL]"
+        lines.append(f"- **工具**: `{step.tool}`")
+        lines.append(f"- **接口偏好**: `{step.interface_preference}`")
+        lines.append(f"- **状态**: {status_mark} {step.status.value}")
 
-        # 判断结果（如有）
-        step_result = step_results.get(step_id, {})
-        if step_result:
-            result = step_result.get("result", "-")
-            reason = step_result.get("reason", "-")
-            result_icon = "[PASS]" if result == "PASS" else "[FAIL]"
-            lines.append(f"- **判断**: {result_icon} **{result}** - {reason}")
+        # Redfish 相关信息
+        if step.endpoint:
+            method = step.method or "GET"
+            lines.append(f"- **端点**: `{method} {step.endpoint}`")
+
+        # 判断结果
+        judgment = step_judgments.get(step.step_id)
+        if judgment:
+            j_mark = "[PASS]" if judgment.result == "PASS" else "[FAIL]"
+            lines.append(f"- **判断**: {j_mark} **{judgment.result}** (置信度: {judgment.confidence:.2f})")
+            lines.append(f"- **理由**: {judgment.reason}")
+            if judgment.concerns:
+                lines.append(f"- **关注点**: {', '.join(judgment.concerns)}")
 
         lines.append("")
 
         # 执行的命令
-        command = step.get("command")
-        if command:
+        if step.command:
             lines.append("**执行的命令:**")
-            lines.append("```")
-            lines.append(command)
+            lines.append("```bash")
+            lines.append(step.command)
             lines.append("```")
             lines.append("")
 
-        # 预期与实际
-        expected = step.get("expected")
-        actual = step.get("actual")
-        if expected is not None or actual is not None:
-            lines.append("| 预期 | 实际 |")
-            lines.append("|------|------|")
-            lines.append(f"| `{expected}` | `{actual}` |")
-            lines.append("")
-
-        # 完整标准输出（核心内容）
-        raw_stdout = step.get("raw_stdout")
-        if raw_stdout:
+        # 完整标准输出
+        if step.raw_stdout:
             lines.append("**标准输出 (raw_stdout):**")
             lines.append("```")
-            lines.append(str(raw_stdout))
+            lines.append(_truncate_output(step.raw_stdout))
             lines.append("```")
             lines.append("")
 
-        # 完整标准错误（核心内容）
-        raw_stderr = step.get("raw_stderr")
-        if raw_stderr:
+        # 完整标准错误
+        if step.raw_stderr:
             lines.append("**标准错误 (raw_stderr):**")
             lines.append("```")
-            lines.append(str(raw_stderr))
+            lines.append(_truncate_output(step.raw_stderr))
             lines.append("```")
             lines.append("")
 
         # 错误信息
-        error_message = step.get("error_message")
-        if error_message:
-            lines.append(f"**错误信息:** {error_message}")
+        if step.error_message:
+            lines.append(f"**错误信息**: {step.error_message}")
             lines.append("")
 
         lines.append("---")
         lines.append("")
 
     # ---------- 判断说明 ----------
-    judge_notes = test_result.get("judge_notes", [])
-    if judge_notes:
+    if test_result.judge_notes:
         lines.append("## 判断说明")
         lines.append("")
-        for note in judge_notes:
+        for note in test_result.judge_notes:
             lines.append(f"- {note}")
         lines.append("")
 
     # ---------- 环境恢复状态 ----------
-    env_recovery = test_result.get("environment_recovery", {})
+    env_recovery = test_result.environment_recovery
     if env_recovery:
         lines.append("## 环境恢复")
         lines.append("")
@@ -270,73 +329,42 @@ def generate_human_report(
                 lines.append(f"- {warning}")
         lines.append("")
 
+    # ---------- 生成时间 ----------
+    lines.append("---")
+    lines.append("")
+    lines.append(f"*报告生成时间: {datetime.now().isoformat()}*")
+
     # 写入文件
     report_content = "\n".join(lines)
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_content)
 
+    print(f"[OK] 测试报告已生成: {report_path}")
     return str(report_path)
 
 
 # ============================================================
-# 批量报告生成
+# 辅助函数
 # ============================================================
 
-def generate_batch_summary_report(
-    execution_records: List[Dict[str, Any]],
-    test_results: List[Dict[str, Any]],
-    shared_dir: str
-) -> str:
-    """
-    生成批量执行汇总报告。
+def _format_time(dt: Optional[datetime]) -> str:
+    """格式化时间显示"""
+    if dt is None:
+        return "-"
+    if isinstance(dt, str):
+        return dt
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    Args:
-        execution_records: ExecutionRecord 列表
-        test_results: TestResult 列表
-        shared_dir: 共享目录根路径
 
-    Returns:
-        汇总报告文件路径
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = Path(shared_dir) / "reports" / f"batch_summary_{timestamp}.md"
+def _is_sensitive_field(field_name: str) -> bool:
+    """判断是否为敏感字段"""
+    sensitive_keywords = ["password", "passwd", "pwd", "secret", "token", "key"]
+    field_lower = field_name.lower()
+    return any(kw in field_lower for kw in sensitive_keywords)
 
-    lines = []
-    lines.append("# 批量执行汇总报告")
-    lines.append("")
-    lines.append(f"**生成时间**: {datetime.now().isoformat()}")
-    lines.append(f"**用例总数**: {len(execution_records)}")
-    lines.append("")
 
-    # 统计
-    passed = sum(1 for r in test_results if r.get("overall_result") == "PASS")
-    failed = len(test_results) - passed
-
-    lines.append("## 执行统计")
-    lines.append("")
-    lines.append(f"| 结果 | 数量 |")
-    lines.append(f"|------|------|")
-    lines.append(f"| [PASS] | {passed} |")
-    lines.append(f"| [FAIL] | {failed} |")
-    lines.append("")
-
-    # 用例列表
-    lines.append("## 用例详情")
-    lines.append("")
-    lines.append(f"| # | 用例名称 | 结果 | 置信度 |")
-    lines.append(f"|---|----------|------|--------|")
-
-    for i, (exec_rec, test_res) in enumerate(zip(execution_records, test_results)):
-        case_name = exec_rec.get("case_name", "-")
-        result = test_res.get("overall_result", "-")
-        confidence = test_res.get("confidence", 0)
-        result_icon = "[PASS]" if result == "PASS" else "[FAIL]"
-        lines.append(f"| {i+1} | {case_name} | {result_icon} {result} | {confidence:.2f} |")
-
-    lines.append("")
-
-    # 写入文件
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
-
-    return str(report_path)
+def _truncate_output(output: str, max_length: int = 10000) -> str:
+    """截断过长的输出"""
+    if len(output) <= max_length:
+        return output
+    return output[:max_length] + f"\n... (已截断，总长度: {len(output)})"
