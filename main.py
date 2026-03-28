@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import sys
 from datetime import datetime
+from itertools import count
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -31,6 +32,9 @@ from src.utils.file_handler import (
     save_test_result,
 )
 
+# 全局执行计数器，确保 execution_id 唯一
+_execution_counter = count(1)
+
 
 # ============================================================
 # 配置与用例加载
@@ -38,18 +42,34 @@ from src.utils.file_handler import (
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """加载配置文件"""
-    with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    path = Path(config_path)
+    if not path.exists():
+        print(f"[ERROR] 配置文件不存在: {config_path}")
+        sys.exit(1)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        print(f"[ERROR] 配置文件格式错误: {e}")
+        sys.exit(1)
 
 
 def load_test_cases(case_paths: List[str]) -> List[Dict[str, Any]]:
     """加载测试用例（支持多个文件）"""
     cases = []
-    for path in case_paths:
-        with open(path, "r", encoding="utf-8") as f:
-            case = yaml.safe_load(f)
-        case["_source_path"] = str(path)
-        cases.append(case)
+    for path_str in case_paths:
+        path = Path(path_str)
+        if not path.exists():
+            print(f"[ERROR] 用例文件不存在: {path_str}")
+            sys.exit(1)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                case = yaml.safe_load(f)
+            case["_source_path"] = str(path)
+            cases.append(case)
+        except yaml.YAMLError as e:
+            print(f"[ERROR] 用例文件格式错误 ({path_str}): {e}")
+            sys.exit(1)
     return cases
 
 
@@ -69,12 +89,16 @@ def group_cases_by_batch(
 
 
 def generate_execution_id() -> str:
-    """生成执行记录 ID"""
-    return f"exec_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    """生成唯一执行记录 ID（含毫秒 + 计数器）"""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    seq = next(_execution_counter)
+    return f"exec_{ts}_{seq:03d}"
 
 
 # ============================================================
 # TODO: 调用 Test_Exec Agent（批量版本）
+#
+# 未来实现位置: src/exec_agent.py
 #
 # 功能描述：
 #   调用 Test_Exec Agent 执行一批用例（1~3个）
@@ -95,7 +119,7 @@ async def call_exec_agent_batch(
 
     TODO: 未来实现
     - 构建 Exec Agent 请求（包含用例、环境、RAG 配置）
-    - 通过 HTTP API 调用 Exec Agent
+    - 通过 HTTP API 调用 Exec Agent（MiniMax-M2.5 @ 192.168.1.100）
     - 返回 ExecutionRecord 列表
     """
     print(f"[TODO] 调用 Test_Exec Agent 执行 {len(batch)} 个用例")
@@ -105,7 +129,6 @@ async def call_exec_agent_batch(
         execution_id = generate_execution_id()
         now = datetime.now()
 
-        # 构建模拟 StepRecord
         mock_step = StepRecord(
             step_id="step_001",
             description="模拟步骤：查询 BMC 信息",
@@ -123,7 +146,6 @@ async def call_exec_agent_batch(
             completed_at=now,
         )
 
-        # 构建 ExecutionRecord
         record = ExecutionRecord(
             execution_id=execution_id,
             case_id=case.get("case_id", case.get("用例_编号", "unknown")),
@@ -155,6 +177,8 @@ async def call_exec_agent_batch(
 # ============================================================
 # TODO: 调用 Test_Judge Agent（单用例）
 #
+# 未来实现位置: src/judge_agent.py
+#
 # 功能描述：
 #   对单个 ExecutionRecord 进行严格判断
 #
@@ -169,13 +193,12 @@ async def call_judge_agent(
 
     TODO: 未来实现
     - 从共享目录读取 ExecutionRecord
-    - 构建 Judge Agent 请求
-    - 通过 HTTP API 调用 Judge Agent
-    - 返回 TestResult
+    - 构建 Judge Agent 请求（三层 Prompt）
+    - 通过 HTTP API 调用 Judge Agent（Qwen3-235B-A22B @ 192.168.1.101）
+    - 解析返回 JSON 为 TestResult
     """
     print(f"[TODO] 调用 Test_Judge Agent: {execution_record.execution_id}")
 
-    # 构建模拟 StepJudgment
     mock_judgment = StepJudgment(
         step_id="step_001",
         result="PASS",
@@ -185,7 +208,6 @@ async def call_judge_agent(
         concerns=[],
     )
 
-    # 构建 TestResult
     result = TestResult(
         execution_id=execution_record.execution_id,
         case_id=execution_record.case_id,
@@ -208,6 +230,45 @@ async def call_judge_agent(
 
 
 # ============================================================
+# 单用例执行（Exec -> Save -> Judge -> Save -> Report）
+# ============================================================
+
+async def run_single_case(
+    case: Dict[str, Any],
+    exec_record: ExecutionRecord,
+    config: Dict[str, Any],
+) -> Dict[str, Any]:
+    """执行单个用例的完整流程：保存记录 -> Judge -> 保存结果 -> 生成报告"""
+    shared_dir = config.get("storage", {}).get("shared_dir", "./shared")
+    case_name = exec_record.case_name
+
+    # Step 1: 保存 ExecutionRecord
+    record_path = save_execution_record(exec_record, shared_dir)
+
+    # Step 2: 调用 Judge Agent
+    test_result = await call_judge_agent(exec_record, config)
+
+    # Step 3: 保存 TestResult
+    result_path = save_test_result(test_result, shared_dir)
+
+    # Step 4: 生成 Markdown 报告
+    report_path = generate_human_report(exec_record, test_result, shared_dir)
+
+    result_icon = "[PASS]" if test_result.overall_result == "PASS" else "[FAIL]"
+    print(f"[OK] 用例完成 --> {case_name} [{result_icon}]")
+
+    return {
+        "case_name": case_name,
+        "execution_id": exec_record.execution_id,
+        "record_path": record_path,
+        "result_path": result_path,
+        "report_path": report_path,
+        "overall_result": test_result.overall_result,
+        "status": "completed",
+    }
+
+
+# ============================================================
 # 批量执行逻辑
 # ============================================================
 
@@ -217,44 +278,37 @@ async def run_batch(
     config: Dict[str, Any]
 ) -> List[Dict[str, Any]]:
     """执行一批测试用例（1~3个）"""
-    shared_dir = config.get("storage", {}).get("shared_dir", "./shared")
     print(f"\n{'='*60}")
     print(f"批次 #{batch_index + 1}  开始执行 {len(batch)} 个用例")
     print(f"{'='*60}")
 
-    results = []
-
     # Step 1: 调用 Exec Agent（批量）
-    exec_records = await call_exec_agent_batch(batch, config)
+    try:
+        exec_records = await call_exec_agent_batch(batch, config)
+    except Exception as e:
+        print(f"[ERROR] Exec Agent 调用失败: {e}")
+        return [
+            {"case_name": c.get("name", c.get("用例_名称", "unknown")), "status": "error", "overall_result": "FAIL"}
+            for c in batch
+        ]
 
+    # Step 2: 逐用例执行 Judge + Save + Report
+    results = []
     for i, (case, exec_record) in enumerate(zip(batch, exec_records)):
-        case_name = case.get("name", case.get("用例_名称", f"unknown_case_{i}"))
+        case_name = exec_record.case_name
         print(f"\n--- 用例 {i+1}/{len(batch)}: {case_name} ---")
 
-        # Step 2: 保存 ExecutionRecord
-        record_path = save_execution_record(exec_record, shared_dir)
-
-        # Step 3: 调用 Judge Agent（单用例）
-        test_result = await call_judge_agent(exec_record, config)
-
-        # Step 4: 保存 TestResult
-        result_path = save_test_result(test_result, shared_dir)
-
-        # Step 5: 生成 Markdown 报告
-        report_path = generate_human_report(exec_record, test_result, shared_dir)
-
-        results.append({
-            "execution_id": exec_record.execution_id,
-            "case_name": case_name,
-            "record_path": record_path,
-            "result_path": result_path,
-            "report_path": report_path,
-            "overall_result": test_result.overall_result,
-            "status": "completed",
-        })
-
-        result_icon = "[PASS]" if test_result.overall_result == "PASS" else "[FAIL]"
-        print(f"[OK] 用例完成 --> {case_name} [{result_icon}]")
+        try:
+            result = await run_single_case(case, exec_record, config)
+            results.append(result)
+        except Exception as e:
+            print(f"[ERROR] 用例执行失败: {case_name} - {e}")
+            results.append({
+                "case_name": case_name,
+                "execution_id": exec_record.execution_id,
+                "status": "error",
+                "overall_result": "FAIL",
+            })
 
     return results
 
@@ -265,49 +319,66 @@ async def run_batch(
 
 async def main_async(args: argparse.Namespace) -> int:
     """异步主函数"""
-    # 加载配置
+    start_time = datetime.now()
+
+    # 1. 加载配置
     config = load_config(args.config)
 
-    # 获取批量大小（1~3）
+    # 2. 确定批量大小（1~3）
     exec_batch_size = max(1, min(config.get("agent", {}).get("exec_batch_size", 1), 3))
-    print(f"启动配置 - Exec 批量大小: {exec_batch_size}")
 
-    # 确保共享目录存在
+    # 3. 确保共享目录存在
     shared_dir = config.get("storage", {}).get("shared_dir", "./shared")
     ensure_shared_dirs(shared_dir)
 
-    # 加载用例
+    # 4. 加载用例
     cases = load_test_cases(args.cases)
-    print(f"共加载 {len(cases)} 个测试用例")
 
-    # 分组执行
+    # 启动信息
+    print(f"\nopenUBMC AI 测试框架")
+    print(f"{'='*60}")
+    print(f"  配置文件:   {args.config}")
+    print(f"  用例数量:   {len(cases)}")
+    print(f"  批量大小:   {exec_batch_size}")
+    print(f"  共享目录:   {shared_dir}")
+    print(f"{'='*60}")
+
+    if not cases:
+        print("[WARN] 未加载到任何测试用例，退出")
+        return 0
+
+    # 5. 分组执行
     batches = group_cases_by_batch(cases, exec_batch_size)
-    print(f"分为 {len(batches)} 个批次执行")
+    print(f"分为 {len(batches)} 个批次执行\n")
 
-    all_results = []
+    all_results: List[Dict[str, Any]] = []
     for batch_index, batch in enumerate(batches):
         batch_results = await run_batch(batch, batch_index, config)
         all_results.extend(batch_results)
 
-    # 执行摘要
-    print("\n" + "=" * 60)
-    print("执行摘要")
-    print("=" * 60)
-
-    completed = sum(1 for r in all_results if r.get("status") == "completed")
+    # 6. 执行摘要
+    elapsed = (datetime.now() - start_time).total_seconds()
     passed = sum(1 for r in all_results if r.get("overall_result") == "PASS")
-    failed = len(all_results) - passed
+    failed = sum(1 for r in all_results if r.get("overall_result") == "FAIL")
+    errors = sum(1 for r in all_results if r.get("status") == "error")
 
-    print(f"总用例数: {len(all_results)}")
-    print(f"执行成功: {completed}")
-    print(f"通过: {passed}")
-    print(f"失败: {failed}")
+    print(f"\n{'='*60}")
+    print(f"执行摘要  (耗时 {elapsed:.1f}s)")
+    print(f"{'='*60}")
+    print(f"  总用例数: {len(all_results)}")
+    print(f"  通过:     {passed}")
+    print(f"  失败:     {failed}")
+    if errors:
+        print(f"  异常:     {errors}")
 
-    for result in all_results:
-        icon = "[PASS]" if result.get("overall_result") == "PASS" else "[FAIL]"
-        print(f"  {icon} {result.get('case_name')}")
+    for r in all_results:
+        icon = "[PASS]" if r.get("overall_result") == "PASS" else "[FAIL]"
+        name = r.get("case_name", "unknown")
+        print(f"  {icon} {name}")
 
-    return 0 if failed == 0 else 1
+    print(f"{'='*60}")
+
+    return 0 if (failed == 0 and errors == 0) else 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -316,7 +387,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config", "-c",
         default="config/config.yaml",
-        help="配置文件路径"
+        help="配置文件路径 (默认: config/config.yaml)"
     )
     parser.add_argument(
         "--cases",
