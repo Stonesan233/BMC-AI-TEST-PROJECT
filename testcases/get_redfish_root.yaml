@@ -1,0 +1,35 @@
+# openUBMC 测试用例 - 查询 Redfish Service Root
+
+用例_编号: "TC-REDFISH-001"
+用例_名称: "Redfish Service Root - 基本信息验证"
+测试类型: "集成测试"
+优先级: "P0"
+
+预置条件:
+  - BMC 网络可达（127.0.0.1:10443）
+  - Redfish 服务正常运行
+
+测试步骤:
+  - step_id: "step_001"
+    description: "GET Redfish Service Root"
+    interface_preference: "redfish"
+    endpoint: "/redfish/v1"
+    method: "GET"
+    expected:
+      status_code: 200
+      response_contains:
+        - "RedfishVersion"
+        - "Vendor"
+      field_check:
+        RedfishVersion: "1.20.1"
+        Vendor: "Huawei"
+        Product: "S920X20"
+
+预期结果:
+  - HTTP 状态码为 200
+  - 响应包含 RedfishVersion 字段
+  - RedfishVersion == "1.20.1"
+  - Vendor == "Huawei"
+  - Oem.openUBMC.ProductName == "S920X20"
+
+清理步骤: []
