@@ -61,9 +61,13 @@ def save_execution_record(record: ExecutionRecord, shared_dir: str) -> str:
 
     # 保存 JSON 文件
     json_path = root / "execution_records" / f"{execution_id}.json"
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(record.model_dump(mode="json"), f, ensure_ascii=False, indent=2, default=str)
-    print(f"[OK] ExecutionRecord 已保存: {json_path}")
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(record.model_dump(mode="json"), f, ensure_ascii=False, indent=2, default=str)
+        print(f"[OK] ExecutionRecord 已保存: {json_path}")
+    except Exception as e:
+        print(f"[ERROR] 保存 ExecutionRecord 失败: {e}")
+        return ""
 
     # 导出证据文件
     evidence_dir = root / "evidence" / execution_id
@@ -82,17 +86,10 @@ def _save_evidence_file(evidence: Evidence, evidence_dir: Path) -> None:
 
     只保存文本类型的证据，二进制证据暂不处理。
     """
-    # 判断是否为文本内容
     content = evidence.content
     if not content or not isinstance(content, str):
         return
 
-    # 跳过过长的内容（超过 100KB）
-    if len(content) > 100 * 1024:
-        print(f"[WARN] 证据内容过长，跳过保存: {evidence.evidence_id}")
-        return
-
-    # 保存证据文件
     ext = _get_evidence_extension(evidence.evidence_type)
     file_path = evidence_dir / f"{evidence.evidence_id}{ext}"
 
@@ -137,11 +134,14 @@ def save_test_result(result: TestResult, shared_dir: str) -> str:
     execution_id = result.execution_id
     json_path = root / "test_results" / f"{execution_id}.json"
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(result.model_dump(mode="json"), f, ensure_ascii=False, indent=2, default=str)
-
-    print(f"[OK] TestResult 已保存: {json_path}")
-    return str(json_path)
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(result.model_dump(mode="json"), f, ensure_ascii=False, indent=2, default=str)
+        print(f"[OK] TestResult 已保存: {json_path}")
+        return str(json_path)
+    except Exception as e:
+        print(f"[ERROR] 保存 TestResult 失败: {e}")
+        return ""
 
 
 # ============================================================
@@ -181,7 +181,7 @@ def generate_human_report(
 
     lines = []
 
-    # ---------- 标题 ----------
+    # ==================== 标题 ====================
     case_name = execution_record.case_name
     overall_result = test_result.overall_result
     result_mark = "**[PASS]**" if overall_result == "PASS" else "**[FAIL]**"
@@ -191,7 +191,7 @@ def generate_human_report(
     lines.append(f"整体结果: {result_mark}")
     lines.append("")
 
-    # ---------- 基本信息 ----------
+    # ==================== 基本信息 ====================
     lines.append("## 基本信息")
     lines.append("")
     lines.append(f"| 项目 | 值 |")
@@ -205,7 +205,7 @@ def generate_human_report(
     lines.append(f"| 完成时间 | {_format_time(execution_record.completed_at)} |")
     lines.append("")
 
-    # ---------- 环境信息 ----------
+    # ==================== 环境信息 ====================
     lines.append("## 环境信息")
     lines.append("")
     env = execution_record.environment
@@ -222,7 +222,7 @@ def generate_human_report(
         lines.append("_无环境信息_")
         lines.append("")
 
-    # ---------- 预置条件检查 ----------
+    # ==================== 预置条件检查 ====================
     lines.append("## 预置条件检查")
     lines.append("")
     prerequisites = execution_record.prerequisites
@@ -240,7 +240,7 @@ def generate_human_report(
         lines.append("_无预置条件_")
         lines.append("")
 
-    # ---------- 步骤执行详情（核心部分）----------
+    # ==================== 步骤执行详情 ====================
     lines.append("## 步骤执行详情")
     lines.append("")
 
@@ -248,6 +248,7 @@ def generate_human_report(
     step_judgments = {sr.step_id: sr for sr in test_result.step_results}
 
     for step in execution_record.steps:
+        # 步骤标题
         lines.append(f"### Step {step.step_id}: {step.description}")
         lines.append("")
 
@@ -281,19 +282,19 @@ def generate_human_report(
             lines.append("```")
             lines.append("")
 
-        # 完整标准输出
+        # 完整标准输出（完整显示，不截断）
         if step.raw_stdout:
             lines.append("**标准输出 (raw_stdout):**")
             lines.append("```")
-            lines.append(_truncate_output(step.raw_stdout))
+            lines.append(step.raw_stdout)
             lines.append("```")
             lines.append("")
 
-        # 完整标准错误
+        # 完整标准错误（完整显示，不截断）
         if step.raw_stderr:
             lines.append("**标准错误 (raw_stderr):**")
             lines.append("```")
-            lines.append(_truncate_output(step.raw_stderr))
+            lines.append(step.raw_stderr)
             lines.append("```")
             lines.append("")
 
@@ -305,7 +306,7 @@ def generate_human_report(
         lines.append("---")
         lines.append("")
 
-    # ---------- 判断说明 ----------
+    # ==================== 判断说明 ====================
     if test_result.judge_notes:
         lines.append("## 判断说明")
         lines.append("")
@@ -313,7 +314,7 @@ def generate_human_report(
             lines.append(f"- {note}")
         lines.append("")
 
-    # ---------- 环境恢复状态 ----------
+    # ==================== 环境恢复状态 ====================
     env_recovery = test_result.environment_recovery
     if env_recovery:
         lines.append("## 环境恢复")
@@ -329,18 +330,21 @@ def generate_human_report(
                 lines.append(f"- {warning}")
         lines.append("")
 
-    # ---------- 生成时间 ----------
+    # ==================== 生成时间 ====================
     lines.append("---")
     lines.append("")
-    lines.append(f"*报告生成时间: {datetime.now().isoformat()}*")
+    lines.append(f"*报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
 
     # 写入文件
-    report_content = "\n".join(lines)
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(report_content)
-
-    print(f"[OK] 测试报告已生成: {report_path}")
-    return str(report_path)
+    try:
+        report_content = "\n".join(lines)
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(report_content)
+        print(f"[OK] 测试报告已生成: {report_path}")
+        return str(report_path)
+    except Exception as e:
+        print(f"[ERROR] 生成报告失败: {e}")
+        return ""
 
 
 # ============================================================
@@ -361,10 +365,3 @@ def _is_sensitive_field(field_name: str) -> bool:
     sensitive_keywords = ["password", "passwd", "pwd", "secret", "token", "key"]
     field_lower = field_name.lower()
     return any(kw in field_lower for kw in sensitive_keywords)
-
-
-def _truncate_output(output: str, max_length: int = 10000) -> str:
-    """截断过长的输出"""
-    if len(output) <= max_length:
-        return output
-    return output[:max_length] + f"\n... (已截断，总长度: {len(output)})"
