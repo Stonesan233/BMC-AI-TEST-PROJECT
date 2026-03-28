@@ -16,6 +16,14 @@ from typing import Any, Dict, List
 
 import yaml
 
+from src.core.schemas import (
+    ExecutionRecord,
+    TestResult,
+    StepRecord,
+    StepJudgment,
+    StepStatus,
+    Evidence,
+)
 from src.utils.file_handler import (
     ensure_shared_dirs,
     generate_human_report,
@@ -81,7 +89,7 @@ def generate_execution_id() -> str:
 async def call_exec_agent_batch(
     batch: List[Dict[str, Any]],
     config: Dict[str, Any]
-) -> List[Dict[str, Any]]:
+) -> List[ExecutionRecord]:
     """
     调用 Test_Exec Agent 执行一批用例。
 
@@ -92,50 +100,53 @@ async def call_exec_agent_batch(
     """
     print(f"[TODO] 调用 Test_Exec Agent 执行 {len(batch)} 个用例")
 
-    # 占位实现：返回模拟 ExecutionRecord
     records = []
     for case in batch:
         execution_id = generate_execution_id()
-        record = {
-            "execution_id": execution_id,
-            "case_id": case.get("case_id", case.get("用例_编号", "unknown")),
-            "case_name": case.get("name", case.get("用例_名称", "unknown")),
-            "environment": {
+        now = datetime.now()
+
+        # 构建模拟 StepRecord
+        mock_step = StepRecord(
+            step_id="step_001",
+            description="模拟步骤：查询 BMC 信息",
+            tool="redfish",
+            interface_preference="redfish",
+            endpoint="/redfish/v1",
+            method="GET",
+            expected="HTTP 200",
+            actual="HTTP 200",
+            raw_stdout='{"@odata.type": "#Service.v1_0_0.Service", "ServiceVersion": "1.0.0"}',
+            raw_stderr="",
+            evidence=[],
+            status=StepStatus.COMPLETED,
+            started_at=now,
+            completed_at=now,
+        )
+
+        # 构建 ExecutionRecord
+        record = ExecutionRecord(
+            execution_id=execution_id,
+            case_id=case.get("case_id", case.get("用例_编号", "unknown")),
+            case_name=case.get("name", case.get("用例_名称", "unknown")),
+            environment={
                 "bmc_host": config.get("target", {}).get("bmc_host", "unknown"),
                 "bmc_user": config.get("target", {}).get("bmc_user", "unknown"),
             },
-            "test_case_info": {
+            test_case_info={
                 "source_path": case.get("_source_path", ""),
             },
-            "prerequisites": [
+            prerequisites=[
                 {
                     "name": "BMC 网络可达",
                     "status": "completed",
                     "details": "模拟：BMC 响应正常",
                 }
             ],
-            "steps": [
-                {
-                    "step_id": "step_001",
-                    "description": "模拟步骤",
-                    "tool": "redfish",
-                    "interface_preference": "redfish",
-                    "command": "GET /redfish/v1",
-                    "expected": "HTTP 200",
-                    "actual": "HTTP 200",
-                    "raw_stdout": '{"@odata.type": "#Service.v1_0_0.Service", "ServiceVersion": "1.0.0"}',
-                    "raw_stderr": "",
-                    "evidence": [],
-                    "status": "completed",
-                    "error_message": None,
-                    "started_at": datetime.now().isoformat(),
-                    "completed_at": datetime.now().isoformat(),
-                }
-            ],
-            "started_at": datetime.now().isoformat(),
-            "completed_at": datetime.now().isoformat(),
-            "overall_status": "completed",
-        }
+            steps=[mock_step],
+            started_at=now,
+            completed_at=now,
+            overall_status="completed",
+        )
         records.append(record)
 
     return records
@@ -150,9 +161,9 @@ async def call_exec_agent_batch(
 # 当前为占位实现，返回模拟数据
 # ============================================================
 async def call_judge_agent(
-    execution_record: Dict[str, Any],
+    execution_record: ExecutionRecord,
     config: Dict[str, Any]
-) -> Dict[str, Any]:
+) -> TestResult:
     """
     调用 Test_Judge Agent 判断结果。
 
@@ -162,35 +173,36 @@ async def call_judge_agent(
     - 通过 HTTP API 调用 Judge Agent
     - 返回 TestResult
     """
-    print(f"[TODO] 调用 Test_Judge Agent: {execution_record.get('execution_id')}")
+    print(f"[TODO] 调用 Test_Judge Agent: {execution_record.execution_id}")
 
-    # 占位实现：返回模拟 TestResult
-    result = {
-        "execution_id": execution_record.get("execution_id"),
-        "case_id": execution_record.get("case_id"),
-        "case_name": execution_record.get("case_name"),
-        "overall_result": "PASS",
-        "confidence": 0.85,
-        "step_results": [
-            {
-                "step_id": "step_001",
-                "result": "PASS",
-                "confidence": 0.90,
-                "reason": "模拟判断：步骤执行成功",
-                "expected_match": True,
-                "concerns": [],
-            }
-        ],
-        "prerequisite_check": {
+    # 构建模拟 StepJudgment
+    mock_judgment = StepJudgment(
+        step_id="step_001",
+        result="PASS",
+        confidence=0.90,
+        reason="模拟判断：步骤执行成功，响应符合预期",
+        expected_match=True,
+        concerns=[],
+    )
+
+    # 构建 TestResult
+    result = TestResult(
+        execution_id=execution_record.execution_id,
+        case_id=execution_record.case_id,
+        case_name=execution_record.case_name,
+        overall_result="PASS",
+        confidence=0.85,
+        step_results=[mock_judgment],
+        prerequisite_check={
             "result": "PASS",
             "failed_items": [],
         },
-        "environment_recovery": {
+        environment_recovery={
             "recovered": True,
             "warnings": [],
         },
-        "judge_notes": ["模拟判断结果"],
-    }
+        judge_notes=["模拟判断结果：所有步骤通过"],
+    )
 
     return result
 
@@ -228,20 +240,20 @@ async def run_batch(
         # Step 4: 保存 TestResult
         result_path = save_test_result(test_result, shared_dir)
 
-        # Step 5: 生成人可读报告
+        # Step 5: 生成 Markdown 报告
         report_path = generate_human_report(exec_record, test_result, shared_dir)
 
         results.append({
-            "execution_id": exec_record.get("execution_id"),
+            "execution_id": exec_record.execution_id,
             "case_name": case_name,
             "record_path": record_path,
             "result_path": result_path,
             "report_path": report_path,
-            "overall_result": test_result.get("overall_result"),
+            "overall_result": test_result.overall_result,
             "status": "completed",
         })
 
-        result_icon = "[PASS]" if test_result.get("overall_result") == "PASS" else "[FAIL]"
+        result_icon = "[PASS]" if test_result.overall_result == "PASS" else "[FAIL]"
         print(f"[OK] 用例完成 --> {case_name} [{result_icon}]")
 
     return results
@@ -277,17 +289,10 @@ async def main_async(args: argparse.Namespace) -> int:
         batch_results = await run_batch(batch, batch_index, config)
         all_results.extend(batch_results)
 
-    # ============================================================
-    # TODO: 整体执行完成后的总结
-    #
-    # 未来可扩展：
-    #   - 生成汇总报告
-    #   - 发送通知
-    #   - 清理临时文件
-    # ============================================================
-    print("\n" + "="*60)
+    # 执行摘要
+    print("\n" + "=" * 60)
     print("执行摘要")
-    print("="*60)
+    print("=" * 60)
 
     completed = sum(1 for r in all_results if r.get("status") == "completed")
     passed = sum(1 for r in all_results if r.get("overall_result") == "PASS")
