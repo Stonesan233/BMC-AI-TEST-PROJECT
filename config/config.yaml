@@ -1,0 +1,27 @@
+# openUBMC AI 测试框架 - 配置文件
+
+# Agent 配置
+agent:
+  exec_batch_size: 1  # Exec Agent 批量大小 (1~3)
+  judge_batch_size: 1  # Judge Agent 批量大小 (固定为 1)
+  rag:
+    enabled: true
+    knowledge_base_path: "./knowledge_base"
+
+# 目标 BMC 配置
+target:
+  bmc_host: "192.168.1.100"
+  bmc_user: "Administrator"
+  bmc_password: "your_password"
+  # os_host: "192.168.1.101"    # 可选：主机控制台
+  # os_user: "root"
+  # os_password: "your_password"
+
+# 存储配置
+storage:
+  shared_dir: "./shared"
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "./logs/test_framework.log"

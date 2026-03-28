@@ -1,0 +1,44 @@
+# openUBMC 测试用例 - 用户管理
+
+用例_编号: "TC-001"
+用例_名称: "用户管理 - 添加用户"
+测试类型: "功能测试"
+优先级: "P0"
+
+预置条件:
+  - BMC 网络可达
+  - 使用 Administrator 账户登录
+
+测试步骤:
+  - step_id: "step_001"
+    description: "查询当前用户列表"
+    interface_preference: "redfish"
+    endpoint: "/redfish/v1/AccountService/Accounts"
+    method: "GET"
+    expected:
+      status_code: 200
+      response_contains: "Members"
+
+  - step_id: "step_002"
+    description: "使用 CLI 新增测试用户"
+    interface_preference: "cli"
+    # 命令将由 RAG 系统根据描述自动生成
+    expected:
+      exit_code: 0
+      output_contains: "success"
+
+  - step_id: "step_003"
+    description: "验证用户已创建"
+    interface_preference: "redfish"
+    endpoint: "/redfish/v1/AccountService/Accounts"
+    method: "GET"
+    expected:
+      status_code: 200
+      response_contains: "test_user"
+
+预期结果:
+  - 用户 test_user 成功创建
+  - 用户出现在用户列表中
+
+清理步骤:
+  - 删除创建的测试用户

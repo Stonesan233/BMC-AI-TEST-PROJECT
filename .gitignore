@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test outputs
+.pytest_cache/
+.coverage/
+htmlcov/
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Local config (keep template)
+config/config.local.yaml
+
+# Shared data (generated at runtime)
+shared/execution_records/
+shared/test_results/
+shared/evidence/
+shared/reports/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
