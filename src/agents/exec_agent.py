@@ -775,6 +775,11 @@ class ExecAgent:
         if json_str:
             try:
                 record = ExecutionRecord.model_validate(json.loads(json_str))
+                # 强制覆盖时间戳和 ID（不信任 LLM 生成的值）
+                now = datetime.now()
+                record.execution_id = f"exec_{now.strftime('%Y%m%d_%H%M%S')}"
+                record.started_at = started_at
+                record.completed_at = now
                 print("[Exec] 成功解析 ExecutionRecord")
                 return record
             except (json.JSONDecodeError, ValidationError):
