@@ -104,29 +104,42 @@ def generate_human_report(
     shared_dir: str
 ) -> str:
     """
-    生成人可读的 Markdown 测试报告
+    生成人可读的 Markdown 测试报告（人工审计友好格式）
     """
     ensure_shared_dirs(shared_dir)
 
     report_path = Path(shared_dir) / "reports" / f"{execution_record.execution_id}.md"
 
     with open(report_path, "w", encoding="utf-8") as f:
-        # ==================== 标题和基本信息 ====================
+        # ==================== 头部 ====================
         f.write(f"# 测试报告 - {execution_record.case_name}\n\n")
-        f.write(f"**执行 ID**: `{execution_record.execution_id}`\n")
-        f.write(f"**用例 ID**: `{execution_record.case_id}`\n")
-        f.write(f"**执行时间**: {_fmt(execution_record.started_at)}\n")
-        f.write(f"**总体结果**: **{test_result.overall_result}**\n")
-        f.write(f"**置信度**: {test_result.confidence:.2f}\n\n")
+        f.write(f"**执行 ID**: {execution_record.execution_id}  \n")
+        f.write(f"**用例 ID**: {execution_record.case_id}  \n")
+        f.write(f"**执行时间**: {_fmt(execution_record.started_at)}  \n")
+        overall = test_result.overall_result
+        conf = test_result.confidence
+        f.write(f"**总体结果**: **{overall}** (置信度: {conf:.2f})\n\n")
 
-        # ==================== 环境信息 ====================
+        # ==================== 环境信息（表格）====================
         f.write("## 环境信息\n\n")
         env = execution_record.environment
         if env:
+            f.write("| 项目 | 值 |\n")
+            f.write("|------|----|\n")
+            label_map = {
+                "bmc_host": "BMC 地址", "bmc_ip": "BMC 地址",
+                "bmc_port": "BMC 端口", "redfish_port": "BMC 端口",
+                "bmc_user": "BMC 用户", "bmc_username": "BMC 用户",
+            }
             for key, value in env.items():
                 if _is_sensitive(key):
                     value = "******"
-                f.write(f"- **{key}**: `{value}`\n")
+                label = label_map.get(key, key)
+                f.write(f"| {label} | {value} |\n")
+            # 补充协议行
+            port = env.get("bmc_port", env.get("redfish_port", 443))
+            proto = "HTTPS (SSL 校验关闭)" if str(port) != "80" else "HTTP"
+            f.write(f"| 协议 | {proto} |\n")
         else:
             f.write("_无环境信息_\n")
         f.write("\n")
@@ -136,57 +149,48 @@ def generate_human_report(
         if execution_record.prerequisites:
             for prereq in execution_record.prerequisites:
                 name = prereq.get("name", "-")
-                status = prereq.get("status", "-")
-                details = prereq.get("details", "")
-                icon = "[OK]" if status == "completed" else "[FAIL]"
-                f.write(f"- {icon} **{name}**: {status}\n")
-                if details:
-                    f.write(f"  - 详情: {details}\n")
+                status_raw = prereq.get("status", "-")
+                status_label = "**PASS**" if status_raw in ("completed", "checked", "pass") else f"**FAIL** ({status_raw})"
+                f.write(f"- {name}: {status_label}\n")
         else:
             f.write("_无预置条件_\n")
-        f.write("\n---\n\n")
+        f.write("\n")
 
-        # ==================== 步骤详情（核心）====================
+        # ==================== 执行步骤详情 ====================
         f.write("## 执行步骤详情\n\n")
 
         for step in execution_record.steps:
-            # 步骤标题
-            f.write(f"### Step {step.step_id}: {step.description or '无描述'}\n\n")
+            # 步骤编号：step_001 -> 001
+            step_num = step.step_id.replace("step_", "").lstrip("0") or "1"
+            f.write(f"### Step {step_num} - {step.description or '无描述'}\n\n")
 
-            # 步骤元信息
-            f.write(f"- **工具**: `{step.tool}`\n")
-            f.write(f"- **接口偏好**: `{step.interface_preference}`\n")
+            f.write(f"- **工具**: {step.tool}\n")
+            f.write(f"- **接口**: {step.interface_preference}\n")
 
             if step.endpoint:
                 method = step.method or "GET"
-                f.write(f"- **端点**: `{method} {step.endpoint}`\n")
+                f.write(f"- **命令**: {method} {step.endpoint}\n")
+            elif step.command:
+                f.write(f"- **命令**: {step.command}\n")
 
-            if step.command:
-                f.write(f"- **执行命令**: `{step.command}`\n")
-
-            # 状态
             status_text = step.status.value if hasattr(step.status, 'value') else str(step.status)
             f.write(f"- **状态**: **{status_text}**\n\n")
 
-            # 原始输出（核心）
-            if step.raw_stdout:
-                f.write("**原始输出 (stdout):**\n")
-                f.write("```text\n")
-                f.write(step.raw_stdout.strip() + "\n")
+            # 原始输出：提取 Redfish body（去掉 httpx 包装层）
+            stdout_text = _extract_response_body(step.raw_stdout)
+            if stdout_text:
+                f.write("**原始输出 (stdout)**:\n")
+                f.write("```json\n")
+                f.write(stdout_text + "\n")
                 f.write("```\n\n")
-            else:
-                f.write("**原始输出 (stdout):** _无输出_\n\n")
 
             # 原始错误
             if step.raw_stderr:
-                f.write("**原始错误 (stderr):**\n")
+                f.write("**原始错误 (stderr)**:\n")
                 f.write("```text\n")
                 f.write(step.raw_stderr.strip() + "\n")
                 f.write("```\n\n")
-            else:
-                f.write("**原始错误 (stderr):** _无错误输出_\n\n")
 
-            # 错误信息
             if step.error_message:
                 f.write(f"**错误信息**: {step.error_message}\n\n")
 
@@ -194,28 +198,30 @@ def generate_human_report(
         f.write("## 判断结果\n\n")
         f.write(f"**总体结论**: **{test_result.overall_result}**\n\n")
 
+        if test_result.step_results:
+            f.write("| 步骤 | 结果 | 置信度 | 判断理由 | 关注点 |\n")
+            f.write("|------|------|--------|----------|--------|\n")
+            for sr in test_result.step_results:
+                step_num = sr.step_id.replace("step_", "").lstrip("0") or "1"
+                concerns = ", ".join(sr.concerns) if sr.concerns else "-"
+                f.write(
+                    f"| Step {step_num} | **{sr.result}** | {sr.confidence:.2f} "
+                    f"| {sr.reason} | {concerns} |\n"
+                )
+            f.write("\n")
+
         if test_result.judge_notes:
             f.write("**判断说明:**\n")
             for note in test_result.judge_notes:
                 f.write(f"- {note}\n")
             f.write("\n")
 
-        # 单步判断详情
-        if test_result.step_results:
-            f.write("### 单步判断详情\n\n")
-            for sr in test_result.step_results:
-                icon = "[PASS]" if sr.result == "PASS" else "[FAIL]"
-                f.write(f"- {icon} **Step {sr.step_id}**: {sr.result} - {sr.reason}\n")
-                if sr.concerns:
-                    f.write(f"  - 关注点: {', '.join(sr.concerns)}\n")
-            f.write("\n")
-
         # 环境恢复
         env_recovery = test_result.environment_recovery
         if env_recovery:
             recovered = env_recovery.get("recovered", False)
-            icon = "[OK]" if recovered else "[WARN]"
-            f.write(f"**环境恢复**: {icon} {'已恢复' if recovered else '未完全恢复'}\n")
+            status_label = "已恢复" if recovered else "未完全恢复"
+            f.write(f"**环境恢复**: {status_label}\n")
             warnings = env_recovery.get("warnings", [])
             if warnings:
                 for w in warnings:
@@ -247,3 +253,29 @@ def _is_sensitive(field_name: str) -> bool:
     """判断是否为敏感字段"""
     keywords = ["password", "passwd", "pwd", "secret", "token", "key"]
     return any(kw in field_name.lower() for kw in keywords)
+
+
+def _extract_response_body(raw_stdout: Optional[str]) -> Optional[str]:
+    """
+    从 raw_stdout 中提取实际响应体。
+
+    如果 raw_stdout 是 httpx 包装格式（含 http_status/headers/body），
+    则只提取 body 部分。否则原样返回。
+    """
+    if not raw_stdout:
+        return None
+
+    text = raw_stdout.strip()
+    if not text:
+        return None
+
+    try:
+        data = json.loads(text)
+        # httpx 包装格式：{"http_status": ..., "headers": ..., "body": ...}
+        if isinstance(data, dict) and "body" in data and "http_status" in data:
+            body = data["body"]
+            return json.dumps(body, ensure_ascii=False, indent=2)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    return text

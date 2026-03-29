@@ -15,6 +15,7 @@ openUBMC AI 测试框架 - Test_Exec Agent（真实 LLM 调用版本）
 
 import asyncio
 import json
+import os
 import re
 import ssl
 import subprocess
@@ -189,9 +190,21 @@ class ExecAgent:
             raise ValueError("config 中缺少 agents.exec 配置段，请检查 config.yaml")
 
         # 必填字段校验
-        for field in ("base_url", "api_key", "model"):
+        for field in ("base_url", "model"):
             if not exec_cfg.get(field):
                 raise ValueError(f"config[agents.exec].{field} 不能为空，请检查 config.yaml")
+
+        # API Key: 支持环境变量引用（如 ${GLM_API_KEY}）
+        api_key_raw = exec_cfg.get("api_key", "")
+        if api_key_raw.startswith("${") and api_key_raw.endswith("}"):
+            env_var = api_key_raw[2:-1].strip("}")
+            api_key = os.environ.get(env_var, "")
+            if not api_key:
+                raise ValueError(
+                    f"环境变量 {env_var} 未设置，请先 export {env_var}=your_key"
+                )
+        else:
+            api_key = api_key_raw
 
         self.base_url = exec_cfg["base_url"]
         self.api_key = exec_cfg["api_key"]
@@ -279,7 +292,7 @@ class ExecAgent:
             final_content = await self._run_conversation(messages)
         except Exception as e:
             print(f"[Exec] 执行异常: {e}")
-            record = self._build_failure_record(case, started_at, error=str(e))
+            record = self._build_failure_record(case, started_at, error_msg=str(e))
             self._save_record(record)
             return record
 
@@ -304,7 +317,7 @@ class ExecAgent:
             except Exception as e:
                 print(f"[Exec] 用例执行失败: {e}")
                 records.append(
-                    self._build_failure_record(case, datetime.now(), error=str(e))
+                    self._build_failure_record(case, datetime.now(), error_msg=str(e))
                 )
         return records
 
