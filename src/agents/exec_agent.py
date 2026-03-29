@@ -194,20 +194,23 @@ class ExecAgent:
             if not exec_cfg.get(field):
                 raise ValueError(f"config[agents.exec].{field} 不能为空，请检查 config.yaml")
 
-        # API Key: 支持环境变量引用（如 ${GLM_API_KEY}）
+        # API Key: 支持环境变量引用（如 ${GLM_API_KEY}）或 .env 文件
         api_key_raw = exec_cfg.get("api_key", "")
         if api_key_raw.startswith("${") and api_key_raw.endswith("}"):
             env_var = api_key_raw[2:-1].strip("}")
             api_key = os.environ.get(env_var, "")
             if not api_key:
+                # 尝试从 .env 文件加载
+                api_key = self._load_dotenv(env_var)
+            if not api_key:
                 raise ValueError(
-                    f"环境变量 {env_var} 未设置，请先 export {env_var}=your_key"
+                    f"环境变量 {env_var} 未设置，请编辑项目根目录 .env 文件或设置环境变量 {env_var}"
                 )
         else:
             api_key = api_key_raw
 
         self.base_url = exec_cfg["base_url"]
-        self.api_key = exec_cfg["api_key"]
+        self.api_key = api_key
         self.model = exec_cfg["model"]
         self.temperature = float(exec_cfg.get("temperature", 0.1))
         self.max_tokens = int(exec_cfg.get("max_tokens", 8192))
@@ -245,6 +248,27 @@ class ExecAgent:
         print(f"[Exec Agent] 使用模型: {self.model} | base_url: {self.base_url}")
         print(f"[Exec Agent] 参数: temperature={self.temperature}, max_tokens={self.max_tokens}")
         print(f"[Exec Agent] 目标 BMC: {self.bmc_host}:{self.bmc_port}")
+
+    # ==================================================================
+    # .env 文件加载
+    # ==================================================================
+
+    @staticmethod
+    def _load_dotenv(key_name: str) -> str:
+        """从项目根目录 .env 文件中读取指定变量"""
+        env_path = Path(__file__).resolve().parents[2] / ".env"
+        if not env_path.exists():
+            return ""
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == key_name:
+                return v.strip().strip("'\"")
+        return ""
 
     # ==================================================================
     # httpx 生命周期
@@ -774,13 +798,18 @@ class ExecAgent:
         )
 
     def _repair_and_validate(self, data: dict, case: dict, started_at: datetime) -> Optional[ExecutionRecord]:
-        """补全缺失的必填字段后验证。"""
+        """补全/修复字段后验证。时间戳等关键字段强制使用真实值。"""
+
+        # 强制覆盖：时间戳和 ID 由框架控制，不信任 LLM 生成的值
+        now = datetime.now()
+        data["execution_id"] = f"exec_{now.strftime('%Y%m%d_%H%M%S')}"
+        data["started_at"] = started_at.isoformat()
+        data["completed_at"] = now.isoformat()
+
+        # 补全缺失字段（不覆盖已有值）
         defaults = {
-            "execution_id": f"exec_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "case_id": case.get("case_id", case.get("用例_编号", "unknown")),
             "case_name": case.get("name", case.get("用例_名称", "unknown")),
-            "started_at": started_at.isoformat(),
-            "completed_at": datetime.now().isoformat(),
             "overall_status": "completed",
         }
         for key, value in defaults.items():

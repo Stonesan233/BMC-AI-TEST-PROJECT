@@ -1,0 +1,239 @@
+{
+  "execution_id": "exec_20260329_123704",
+  "case_id": "TC-REDFISH-001",
+  "case_name": "Redfish Service Root - 基本信息验证",
+  "environment": {
+    "bmc_ip": "127.0.0.1",
+    "bmc_username": "Administrator"
+  },
+  "test_case_info": {
+    "test_type": "集成测试",
+    "priority": "P0",
+    "expected_results": [
+      "HTTP 状态码为 200",
+      "响应包含 RedfishVersion 字段",
+      "RedfishVersion == \"1.20.1\"",
+      "Vendor == \"Huawei\"",
+      "Oem.openUBMC.ProductName == \"S920X20\""
+    ]
+  },
+  "prerequisites": [
+    {
+      "name": "BMC 网络可达（127.0.0.1:10443）",
+      "status": "checked"
+    },
+    {
+      "name": "Redfish 服务正常运行",
+      "status": "checked"
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "description": "GET Redfish Service Root",
+      "tool": "redfish_request",
+      "interface_preference": "redfish",
+      "endpoint": null,
+      "method": null,
+      "request_body": null,
+      "command": "GET /redfish/v1",
+      "expected": {
+        "status_code": 200,
+        "response_contains": [
+          "RedfishVersion",
+          "Vendor"
+        ],
+        "field_check": {
+          "RedfishVersion": "1.20.1",
+          "Vendor": "Huawei",
+          "Product": "S920X20"
+        }
+      },
+      "actual": {
+        "http_status": 200,
+        "response_body": {
+          "@odata.context": "/redfish/v1/$metadata#ServiceRoot.ServiceRoot",
+          "@odata.id": "/redfish/v1/",
+          "@odata.type": "#ServiceRoot.v1_17_0.ServiceRoot",
+          "Id": "RootService",
+          "Name": "Root Service",
+          "RedfishVersion": "1.20.1",
+          "UUID": "012B0242-2022-A6E3-11EE-006322669F60",
+          "Systems": {
+            "@odata.id": "/redfish/v1/Systems"
+          },
+          "Chassis": {
+            "@odata.id": "/redfish/v1/Chassis"
+          },
+          "Managers": {
+            "@odata.id": "/redfish/v1/Managers"
+          },
+          "Tasks": {
+            "@odata.id": "/redfish/v1/TaskService"
+          },
+          "SessionService": {
+            "@odata.id": "/redfish/v1/SessionService"
+          },
+          "AccountService": {
+            "@odata.id": "/redfish/v1/AccountService"
+          },
+          "EventService": {
+            "@odata.id": "/redfish/v1/EventService"
+          },
+          "Links": {
+            "Sessions": {
+              "@odata.id": "/redfish/v1/SessionService/Sessions"
+            }
+          },
+          "UpdateService": {
+            "@odata.id": "/redfish/v1/UpdateService"
+          },
+          "Registries": {
+            "@odata.id": "/redfish/v1/Registries"
+          },
+          "JsonSchemas": {
+            "@odata.id": "/redfish/v1/JSONSchemas"
+          },
+          "CertificateService": {
+            "@odata.id": "/redfish/v1/CertificateService"
+          },
+          "ComponentIntegrity": {
+            "@odata.id": "/redfish/v1/ComponentIntegrity"
+          },
+          "JobService": {
+            "@odata.id": "/redfish/v1/JobService"
+          },
+          "PowerEquipment": {
+            "@odata.id": "/redfish/v1/PowerEquipment"
+          },
+          "TelemetryService": {
+            "@odata.id": "/redfish/v1/TelemetryService"
+          },
+          "ThermalEquipment": {
+            "@odata.id": "/redfish/v1/ThermalEquipment"
+          },
+          "ProtocolFeaturesSupported": {
+            "DeepOperations": {
+              "DeepPATCH": false,
+              "DeepPOST": true,
+              "MaxLevels": 1
+            },
+            "ExpandQuery": {
+              "ExpandAll": false,
+              "Levels": true,
+              "MaxLevels": 1,
+              "Links": false,
+              "NoLinks": true
+            },
+            "FilterQuery": true,
+            "FilterQueryComparisonOperations": true,
+            "FilterQueryCompoundOperations": true,
+            "SelectQuery": true,
+            "OnlyMemberQuery": true,
+            "ExcerptQuery": false,
+            "TopSkipQuery": true,
+            "MultipleHTTPRequests": true
+          },
+          "Vendor": "Huawei",
+          "Product": "S920X20",
+          "Oem": {
+            "openUBMC": {
+              "SmsUpdateService": null,
+              "SystemOverview": {
+                "@odata.id": "/redfish/v1/SystemOverview"
+              },
+              "PerformanceCollection": {
+                "@odata.id": "/redfish/v1/PerformanceCollection"
+              },
+              "AssetService": {
+                "@odata.id": "/redfish/v1/Oem/openUBMC/AssetService"
+              },
+              "SecurityBanner": "WARNING! This system is PRIVATE and PROPRIETARY and may only be accessed by authorized users. Unauthorized use of the system is prohibited. The owner, or its agents, may monitor any activity or communication on the system. The owner, or its agents, may retrieve any information stored within the system. By accessing and using the system, you are consenting to such monitoring and information retrieval for law enforcement and other purposes.",
+              "ProductName": "S920X20",
+              "ProductSerialNumber": "",
+              "HostName": "iBMC",
+              "LanguageSet": "en,zh",
+              "Copyright": "openUBMC 2025. All rights reserved.",
+              "DocSupportFlag": false,
+              "DomainName": [
+                "",
+                "",
+                "",
+                "",
+                "",
+                ""
+              ],
+              "ProductPicture": "img_01",
+              "AccountLockoutDuration": 300,
+              "SmsName": "",
+              "SoftwareName": "openUBMC",
+              "MajorVersion": "5",
+              "ChassisHeightU": 2,
+              "FQDN": "iBMC",
+              "StartupDurationSeconds": null,
+              "StartupState": null,
+              "SystemAssembly": {
+                "@odata.id": "/redfish/v1/Oem/openUBMC/SystemAssembly"
+              },
+              "ObservabilityService": {
+                "@odata.id": "/redfish/v1/Oem/openUBMC/ObservabilityService"
+              }
+            }
+          }
+        }
+      },
+      "raw_stdout": "{\n  \"http_status\": 200,\n  \"headers\": {\n    \"server\": \"WebServer/1.0.0\",\n    \"date\": \"Tue, 15 Aug 2023 09:20:49 GMT\",\n    \"content-type\": \"application/json;charset=utf-8\",\n    \"content-length\": \"2923\",\n    \"connection\": \"keep-alive\",\n    \"allow\": \"GET,PATCH\",\n    \"link\": \"</redfish/v1/SchemaStore/en/ServiceRoot.json>;rel=describedby\",\n    \"etag\": \"W/\\\"2bfdd2fe\\\"\",\n    \"odata-version\": \"4.0\",\n    \"x-frame-options\": \"DENY\",\n    \"x-download-options\": \"noopen\",\n    \"x-xss-protection\": \"1;mode=block\",\n    \"x-content-type-options\": \"nosniff\",\n    \"x-permitted-cross-domain-policies\": \"none\",\n    \"strict-transport-security\": \"max-age=31536000; includeSubDomains\",\n    \"content-security-policy\": \"default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self' wss://*:*; img-src 'self' data:; frame-src 'self'; font-src 'self' data:; object-src 'self'; style-src 'self'; form-action 'self'; frame-ancestors 'self'; plugin-types 'none\",\n    \"cache-control\": \"max-age=0, no-cache, no-store, must-revalidate\",\n    \"pragma\": \"no-cache\",\n    \"expires\": \"0\",\n    \"referrer-policy\": \"no-referrer\"\n  },\n  \"body\": {\n    \"@odata.context\": \"/redfish/v1/$metadata#ServiceRoot.ServiceRoot\",\n    \"@odata.id\": \"/redfish/v1/\",\n    \"@odata.type\": \"#ServiceRoot.v1_17_0.ServiceRoot\",\n    \"Id\": \"RootService\",\n    \"Name\": \"Root Service\",\n    \"RedfishVersion\": \"1.20.1\",\n    \"UUID\": \"012B0242-2022-A6E3-11EE-006322669F60\",\n    \"Systems\": {\n      \"@odata.id\": \"/redfish/v1/Systems\"\n    },\n    \"Chassis\": {\n      \"@odata.id\": \"/redfish/v1/Chassis\"\n    },\n    \"Managers\": {\n      \"@odata.id\": \"/redfish/v1/Managers\"\n    },\n    \"Tasks\": {\n      \"@odata.id\": \"/redfish/v1/TaskService\"\n    },\n    \"SessionService\": {\n      \"@odata.id\": \"/redfish/v1/SessionService\"\n    },\n    \"AccountService\": {\n      \"@odata.id\": \"/redfish/v1/AccountService\"\n    },\n    \"EventService\": {\n      \"@odata.id\": \"/redfish/v1/EventService\"\n    },\n    \"Links\": {\n      \"Sessions\": {\n        \"@odata.id\": \"/redfish/v1/SessionService/Sessions\"\n      }\n    },\n    \"UpdateService\": {\n      \"@odata.id\": \"/redfish/v1/UpdateService\"\n    },\n    \"Registries\": {\n      \"@odata.id\": \"/redfish/v1/Registries\"\n    },\n    \"JsonSchemas\": {\n      \"@odata.id\": \"/redfish/v1/JSONSchemas\"\n    },\n    \"CertificateService\": {\n      \"@odata.id\": \"/redfish/v1/CertificateService\"\n    },\n    \"ComponentIntegrity\": {\n      \"@odata.id\": \"/redfish/v1/ComponentIntegrity\"\n    },\n    \"JobService\": {\n      \"@odata.id\": \"/redfish/v1/JobService\"\n    },\n    \"PowerEquipment\": {\n      \"@odata.id\": \"/redfish/v1/PowerEquipment\"\n    },\n    \"TelemetryService\": {\n      \"@odata.id\": \"/redfish/v1/TelemetryService\"\n    },\n    \"ThermalEquipment\": {\n      \"@odata.id\": \"/redfish/v1/ThermalEquipment\"\n    },\n    \"ProtocolFeaturesSupported\": {\n      \"DeepOperations\": {\n        \"DeepPATCH\": false,\n        \"DeepPOST\": true,\n        \"MaxLevels\": 1\n      },\n      \"ExpandQuery\": {\n        \"ExpandAll\": false,\n        \"Levels\": true,\n        \"MaxLevels\": 1,\n        \"Links\": false,\n        \"NoLinks\": true\n      },\n      \"FilterQuery\": true,\n      \"FilterQueryComparisonOperations\": true,\n      \"FilterQueryCompoundOperations\": true,\n      \"SelectQuery\": true,\n      \"OnlyMemberQuery\": true,\n      \"ExcerptQuery\": false,\n      \"TopSkipQuery\": true,\n      \"MultipleHTTPRequests\": true\n    },\n    \"Vendor\": \"Huawei\",\n    \"Product\": \"S920X20\",\n    \"Oem\": {\n      \"openUBMC\": {\n        \"SmsUpdateService\": null,\n        \"SystemOverview\": {\n          \"@odata.id\": \"/redfish/v1/SystemOverview\"\n        },\n        \"PerformanceCollection\": {\n          \"@odata.id\": \"/redfish/v1/PerformanceCollection\"\n        },\n        \"AssetService\": {\n          \"@odata.id\": \"/redfish/v1/Oem/openUBMC/AssetService\"\n        },\n        \"SecurityBanner\": \"WARNING! This system is PRIVATE and PROPRIETARY and may only be accessed by authorized users. Unauthorized use of the system is prohibited. The owner, or its agents, may monitor any activity or communication on the system. The owner, or its agents, may retrieve any information stored within the system. By accessing and using the system, you are consenting to such monitoring and information retrieval for law enforcement and other purposes.\",\n        \"ProductName\": \"S920X20\",\n        \"ProductSerialNumber\": \"\",\n        \"HostName\": \"iBMC\",\n        \"LanguageSet\": \"en,zh\",\n        \"Copyright\": \"openUBMC 2025. All rights reserved.\",\n        \"DocSupportFlag\": false,\n        \"DomainName\": [\n          \"\",\n          \"\",\n          \"\",\n          \"\",\n          \"\",\n          \"\"\n        ],\n        \"ProductPicture\": \"img_01\",\n        \"AccountLockoutDuration\": 300,\n        \"SmsName\": \"\",\n        \"SoftwareName\": \"openUBMC\",\n        \"MajorVersion\": \"5\",\n        \"ChassisHeightU\": 2,\n        \"FQDN\": \"iBMC\",\n        \"StartupDurationSeconds\": null,\n        \"StartupState\": null,\n        \"SystemAssembly\": {\n          \"@odata.id\": \"/redfish/v1/Oem/openUBMC/SystemAssembly\"\n        },\n        \"ObservabilityService\": {\n          \"@odata.id\": \"/redfish/v1/Oem/openUBMC/ObservabilityService\"\n        }\n      }\n    }\n  }\n}",
+      "raw_stderr": "",
+      "evidence": [
+        {
+          "evidence_id": "step_001_ev_001",
+          "step_id": "step_001",
+          "evidence_type": "http_status",
+          "content": "\"HTTP 状态码\"",
+          "metadata": {},
+          "captured_at": "2026-03-29T12:37:04.543353"
+        },
+        {
+          "evidence_id": "step_001_ev_002",
+          "step_id": "step_001",
+          "evidence_type": "response_field",
+          "content": "\"Redfish 版本号\"",
+          "metadata": {},
+          "captured_at": "2026-03-29T12:37:04.543353"
+        },
+        {
+          "evidence_id": "step_001_ev_003",
+          "step_id": "step_001",
+          "evidence_type": "response_field",
+          "content": "\"厂商信息\"",
+          "metadata": {},
+          "captured_at": "2026-03-29T12:37:04.543353"
+        },
+        {
+          "evidence_id": "step_001_ev_004",
+          "step_id": "step_001",
+          "evidence_type": "response_field",
+          "content": "\"产品型号\"",
+          "metadata": {},
+          "captured_at": "2026-03-29T12:37:04.543353"
+        },
+        {
+          "evidence_id": "step_001_ev_005",
+          "step_id": "step_001",
+          "evidence_type": "response_field",
+          "content": "\"OEM 产品名称\"",
+          "metadata": {},
+          "captured_at": "2026-03-29T12:37:04.543353"
+        }
+      ],
+      "status": "completed",
+      "http_status": null,
+      "error_message": null,
+      "started_at": "2025-06-18T14:20:53Z",
+      "completed_at": "2025-06-18T14:20:53Z"
+    }
+  ],
+  "started_at": "2026-03-29T12:35:25.909219",
+  "completed_at": "2026-03-29T12:37:04.543353",
+  "overall_status": "completed"
+}
