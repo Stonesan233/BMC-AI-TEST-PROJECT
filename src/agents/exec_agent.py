@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-openUBMC AI 测试框架 - Test_Exec Agent
+openUBMC AI 测试框架 - Test_Exec Agent（真实 LLM 调用版本）
 
 职责：理解测试用例 -> 调用 BMC 接口执行 -> 收集证据 -> 生成 ExecutionRecord。
 严格遵守 "只执行，不判断" 原则。
@@ -8,24 +8,21 @@ openUBMC AI 测试框架 - Test_Exec Agent
 技术方案：
 - AsyncOpenAI + stream=True，支持 OpenAI-compatible API
 - 多轮 Tool Calling 循环（redfish / ipmi / ssh / rag）
-- Jinja2 渲染 system prompt（src/prompts/exec_system.txt）
-- 执行完成后自动保存 ExecutionRecord（file_handler）
-
-配置格式：
-
-    agents:
-      exec:
-        base_url: "https://open.bigmodel.cn/api/paas/v4"
-        api_key: "xxx.xxx"
-        model: "glm-5"
+- httpx 真实 Redfish 请求（SSL 验证关闭，适配自签证书）
+- Jinja2 渲染 system prompt
+- 执行完成后自动保存 ExecutionRecord + 生成报告
 """
 
+import asyncio
 import json
 import re
+import ssl
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import httpx
 from jinja2 import Template
 from openai import AsyncOpenAI
 from pydantic import ValidationError
@@ -35,7 +32,7 @@ from src.utils.file_handler import save_execution_record
 
 
 # ======================================================================
-# 模块级工具
+# JSON 提取
 # ======================================================================
 
 def extract_json_from_response(text: str) -> Optional[str]:
@@ -180,11 +177,11 @@ class ExecAgent:
     Test_Exec Agent - 测试执行引擎
 
     通过 OpenAI-compatible API 与 LLM 交互，使用 Tool Calling 执行 BMC 操作。
-    支持流式输出，实时展示执行过程。
+    支持：真实 Redfish HTTP 调用、SSH 执行、IPMI 命令。
     """
 
     SYSTEM_PROMPT_PATH = Path("src/prompts/exec_system.txt")
-    MAX_TOOL_ROUNDS = 20
+    MAX_TOOL_ROUNDS = 15
 
     def __init__(self, config: dict):
         exec_cfg = config["agents"]["exec"]
@@ -202,6 +199,16 @@ class ExecAgent:
             self.SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
         )
 
+        # BMC 连接信息
+        target = config.get("target", {})
+        self.bmc_host = target.get("bmc_host", "127.0.0.1")
+        self.bmc_port = target.get("bmc_port", 443)
+        self.bmc_user = target.get("bmc_user", "Administrator")
+        self.bmc_password = target.get("bmc_password", "")
+
+        # httpx 客户端（禁用 SSL 验证，适配自签证书）
+        self._http_client: Optional[httpx.AsyncClient] = None
+
         # Tool 分发表
         self._tool_handlers = {
             "redfish_request": self._tool_redfish_request,
@@ -210,7 +217,26 @@ class ExecAgent:
             "bmc_command_rag": self._tool_bmc_command_rag,
         }
 
-        print(f"[Exec] Agent 初始化完成 (model={self.model})")
+        print(f"[Exec] Agent 初始化完成 (model={self.model}, bmc={self.bmc_host}:{self.bmc_port})")
+
+    # ==================================================================
+    # httpx 生命周期
+    # ==================================================================
+
+    async def _get_http_client(self) -> httpx.AsyncClient:
+        """获取或创建 httpx 异步客户端（懒初始化）。"""
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(
+                base_url=f"https://{self.bmc_host}:{self.bmc_port}",
+                verify=False,  # 自签证书环境
+                timeout=30.0,
+            )
+        return self._http_client
+
+    async def close(self):
+        """清理资源。"""
+        if self._http_client and not self._http_client.is_closed:
+            await self._http_client.aclose()
 
     # ==================================================================
     # 公开接口
@@ -220,7 +246,7 @@ class ExecAgent:
         """
         执行单个测试用例。
 
-        流程：渲染 prompt -> LLM 对话（含 Tool Calling）-> 解析 ExecutionRecord -> 保存
+        流程：渲染 prompt -> LLM 对话（含 Tool Calling）-> 解析 -> 保存
         """
         case_name = case.get("name", case.get("用例_名称", "unknown"))
         print(f"\n[Exec] 开始执行: {case_name}")
@@ -311,6 +337,7 @@ class ExecAgent:
         每轮：流式接收 -> 如有 tool_calls 则执行 -> 继续
         无 tool_calls 时返回最终文本。
         """
+        text = ""
         for round_num in range(self.MAX_TOOL_ROUNDS):
             print(f"\n[Exec] --- 第 {round_num + 1} 轮 ---")
 
@@ -330,7 +357,7 @@ class ExecAgent:
         """
         流式接收一轮 LLM 响应。
 
-        实时打印文本内容（[Exec] 前缀），累积 tool call 分片。
+        实时打印文本内容，累积 tool call 分片。
 
         Returns:
             (text_content, tool_calls_map, finish_reason)
@@ -430,15 +457,7 @@ class ExecAgent:
     # ==================================================================
 
     async def _dispatch_tool(self, tool_name: str, args: dict) -> str:
-        """
-        分发 tool call 到对应 handler。
-
-        TODO: 替换占位实现为真实集成
-        - redfish_request -> src/tools/redfish.py (requests/httpx)
-        - ipmi_command    -> src/tools/ipmi.py   (subprocess + ipmitool)
-        - ssh_exec        -> src/tools/ssh.py     (paramiko / asyncssh)
-        - bmc_command_rag -> src/tools/rag.py     (向量数据库 + Embedding)
-        """
+        """分发 tool call 到对应 handler。"""
         handler = self._tool_handlers.get(tool_name)
         if not handler:
             return json.dumps({"error": f"未知工具: {tool_name}"}, ensure_ascii=False)
@@ -449,69 +468,234 @@ class ExecAgent:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     # ------------------------------------------------------------------
-    # 占位 Tool 实现
+    # 真实 Tool 实现
     # ------------------------------------------------------------------
 
     async def _tool_redfish_request(self, args: dict) -> str:
-        """占位：Redfish 请求。TODO: 集成 src/tools/redfish.py"""
+        """
+        真实 Redfish 请求。
+
+        使用 httpx 发送 HTTPS 请求到 BMC（禁用 SSL 验证）。
+        从 config 中读取 bmc_host、bmc_port、bmc_user、bmc_password。
+        """
         endpoint = args.get("endpoint", "/redfish/v1")
         method = args.get("method", "GET").upper()
+        body = args.get("body")
 
-        # 按端点+方法返回差异化模拟响应
-        if "AccountService/Accounts" in endpoint:
+        client = await self._get_http_client()
+
+        # 构建 Basic Auth
+        import base64
+        credentials = f"{self.bmc_user}:{self.bmc_password}"
+        auth_header = "Basic " + base64.b64encode(credentials.encode()).decode()
+
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": auth_header,
+        }
+
+        try:
             if method == "GET":
-                body = {
-                    "@odata.id": "/redfish/v1/AccountService/Accounts",
-                    "Members": [{"@odata.id": "/redfish/v1/AccountService/Accounts/2"}],
-                    "Members@odata.count": 1,
-                }
+                resp = await client.get(endpoint, headers=headers)
+            elif method == "POST":
+                resp = await client.post(endpoint, headers=headers, json=body)
+            elif method == "PATCH":
+                resp = await client.patch(endpoint, headers=headers, json=body)
             elif method == "DELETE":
-                body = {"@MessageId": "Base.1.0.Success", "Message": "Deleted."}
+                resp = await client.delete(endpoint, headers=headers)
             else:
-                body = {"@MessageId": "Base.1.0.Success", "Message": "Success."}
-        elif "Systems/system" in endpoint:
-            body = {"PowerState": "On", "Status": {"Health": "OK"}}
-        else:
-            body = {"ServiceVersion": "1.0.0", "Status": {"Health": "OK"}}
+                return json.dumps({"error": f"不支持的 HTTP 方法: {method}"}, ensure_ascii=False)
 
-        return json.dumps({"http_status": 200, "body": body}, ensure_ascii=False, indent=2)
+            # 尝试解析 JSON 响应
+            try:
+                resp_body = resp.json()
+            except Exception:
+                resp_body = resp.text
+
+            return json.dumps(
+                {
+                    "http_status": resp.status_code,
+                    "headers": dict(resp.headers),
+                    "body": resp_body,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        except httpx.ConnectError as e:
+            return json.dumps(
+                {"error": f"连接失败 ({self.bmc_host}:{self.bmc_port}): {e}"},
+                ensure_ascii=False,
+            )
+        except httpx.TimeoutException:
+            return json.dumps(
+                {"error": f"请求超时 ({self.bmc_host}:{self.bmc_port})"},
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps(
+                {"error": f"Redfish 请求异常: {e}"},
+                ensure_ascii=False,
+            )
 
     async def _tool_ipmi_command(self, args: dict) -> str:
-        """占位：IPMI 命令。TODO: 集成 src/tools/ipmi.py"""
-        cmd = args.get("command", "")
-        return json.dumps(
-            {"command": cmd, "exit_code": 0, "stdout": f"OK: {cmd}", "stderr": ""},
-            ensure_ascii=False,
-        )
+        """
+        真实 IPMI 命令。
+
+        通过 subprocess 调用 ipmitool。
+        """
+        command = args.get("command", "")
+        timeout = args.get("timeout", 30)
+
+        # 构建 ipmitool 命令
+        ipmi_cmd = [
+            "ipmitool",
+            "-H", self.bmc_host,
+            "-U", self.bmc_user,
+            "-P", self.bmc_password,
+            "-I", "lanplus",
+        ] + command.split()
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *ipmi_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+
+            return json.dumps(
+                {
+                    "command": command,
+                    "exit_code": proc.returncode,
+                    "stdout": stdout.decode("utf-8", errors="replace").strip(),
+                    "stderr": stderr.decode("utf-8", errors="replace").strip(),
+                },
+                ensure_ascii=False,
+            )
+        except FileNotFoundError:
+            return json.dumps(
+                {"error": "ipmitool 未安装或不在 PATH 中"},
+                ensure_ascii=False,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            return json.dumps(
+                {"error": f"IPMI 命令超时 ({timeout}s): {command}"},
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps(
+                {"error": f"IPMI 执行异常: {e}"},
+                ensure_ascii=False,
+            )
 
     async def _tool_ssh_exec(self, args: dict) -> str:
-        """占位：SSH 执行。TODO: 集成 src/tools/ssh.py"""
-        cmd = args.get("command", "")
-        host = args.get("host", "unknown")
-        return json.dumps(
-            {"host": host, "command": cmd, "exit_code": 0, "stdout": f"OK on {host}: {cmd}", "stderr": ""},
-            ensure_ascii=False,
-        )
+        """
+        真实 SSH 执行。
+
+        通过 subprocess 调用系统 ssh 命令。
+        使用 -o StrictHostKeyChecking=no 禁用主机密钥检查。
+        """
+        host = args.get("host", self.bmc_host)
+        port = args.get("port", 22)
+        user = args.get("user", self.bmc_user)
+        password = args.get("password", self.bmc_password)
+        command = args.get("command", "")
+        timeout = args.get("timeout", 30)
+
+        ssh_cmd = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", f"ConnectTimeout={timeout}",
+            "-p", str(port),
+            f"{user}@{host}",
+            command,
+        ]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *ssh_cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=password.encode() + b"\n"),
+                timeout=timeout,
+            )
+
+            return json.dumps(
+                {
+                    "host": host,
+                    "port": port,
+                    "command": command,
+                    "exit_code": proc.returncode,
+                    "stdout": stdout.decode("utf-8", errors="replace").strip(),
+                    "stderr": stderr.decode("utf-8", errors="replace").strip(),
+                },
+                ensure_ascii=False,
+            )
+        except FileNotFoundError:
+            return json.dumps(
+                {"error": "ssh 命令未找到"},
+                ensure_ascii=False,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            return json.dumps(
+                {"error": f"SSH 连接超时 ({timeout}s): {host}:{port}"},
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps(
+                {"error": f"SSH 执行异常: {e}"},
+                ensure_ascii=False,
+            )
 
     async def _tool_bmc_command_rag(self, args: dict) -> str:
-        """占位：BMC 命令 RAG。TODO: 集成 src/tools/rag.py"""
+        """
+        BMC 命令 RAG（关键词匹配模拟）。
+
+        TODO: 集成 src/tools/rag.py（向量数据库 + Embedding）
+        """
         operation = args.get("operation_description", "")
         hint = args.get("interface_hint", "any")
         templates = []
 
-        # 关键词匹配模拟
-        if "用户" in operation or "user" in operation.lower():
+        if "用户" in operation or "user" in operation.lower() or "账户" in operation or "account" in operation.lower():
             templates.append({
                 "interface_type": "redfish",
                 "recommended_command": "POST /redfish/v1/AccountService/Accounts",
                 "parameters": {"UserName": "test_user", "Password": "Test@123", "RoleId": "Operator"},
                 "notes": "RoleId 可选 Administrator / Operator / ReadOnly",
             })
+            if hint in ("cli", "any"):
+                templates.append({
+                    "interface_type": "cli",
+                    "recommended_command": "account adduser --username test_user --password Test@123 --role Operator",
+                    "notes": "添加前必须检查用户数量上限（15个）",
+                })
         if "电源" in operation or "power" in operation.lower():
             templates.append({
                 "interface_type": "redfish",
                 "recommended_command": "POST /redfish/v1/Systems/system/Actions/ComputerSystem.Reset",
                 "parameters": {"ResetType": "On"},
+                "notes": "ResetType 可选 On/Off/GracefulShutdown/ForceRestart",
+            })
+        if "传感器" in operation or "sensor" in operation.lower():
+            templates.append({
+                "interface_type": "redfish",
+                "recommended_command": "GET /redfish/v1/Chassis/1/Sensors",
+                "notes": "传感器列表查询",
+            })
+        if "SEL" in operation or "日志" in operation or "event" in operation.lower():
+            templates.append({
+                "interface_type": "redfish",
+                "recommended_command": "GET /redfish/v1/Systems/system/LogServices/LogEntries",
+                "notes": "SEL 日志查询",
             })
         if not templates:
             templates.append({
@@ -531,15 +715,10 @@ class ExecAgent:
     # ==================================================================
 
     def _parse_record(self, content: str, case: dict, started_at: datetime) -> ExecutionRecord:
-        """
-        从 LLM 输出解析 ExecutionRecord。
-
-        尝试：直接解析 -> 修复后解析 -> fallback
-        """
+        """从 LLM 输出解析 ExecutionRecord。尝试：直接解析 -> 修复 -> fallback"""
         json_str = extract_json_from_response(content)
 
         if json_str:
-            # 第一次尝试：直接解析
             try:
                 record = ExecutionRecord.model_validate(json.loads(json_str))
                 print("[Exec] 成功解析 ExecutionRecord")
@@ -547,7 +726,6 @@ class ExecAgent:
             except (json.JSONDecodeError, ValidationError):
                 pass
 
-            # 第二次尝试：补全必填字段后重试
             try:
                 data = json.loads(json_str)
                 record = self._repair_and_validate(data, case, started_at)
@@ -557,7 +735,6 @@ class ExecAgent:
             except Exception:
                 pass
 
-        # Fallback
         print("[Exec] 未找到有效 JSON，生成 fallback 记录")
         return self._build_failure_record(
             case, started_at,
@@ -597,13 +774,7 @@ class ExecAgent:
         step_desc: str = "执行过程中发生异常",
         error_msg: str = "",
     ) -> ExecutionRecord:
-        """
-        构建 fallback / error 记录。
-
-        统一处理两种失败场景：
-        - 解析失败：raw_output 保留原始 LLM 输出
-        - 执行异常：error_msg 保留异常信息
-        """
+        """构建 fallback / error 记录。"""
         completed_at = datetime.now()
         ts = completed_at.strftime("%Y%m%d_%H%M%S")
 
@@ -628,8 +799,9 @@ class ExecAgent:
             case_id=case.get("case_id", case.get("用例_编号", "unknown")),
             case_name=case.get("name", case.get("用例_名称", "unknown")),
             environment={
-                "bmc_host": self.config.get("target", {}).get("bmc_host", "unknown"),
-                "bmc_user": self.config.get("target", {}).get("bmc_user", "unknown"),
+                "bmc_host": self.bmc_host,
+                "bmc_port": self.bmc_port,
+                "bmc_user": self.bmc_user,
             },
             test_case_info={"source_path": case.get("_source_path", ""), "failure": True},
             prerequisites=[],
