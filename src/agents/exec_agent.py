@@ -184,13 +184,25 @@ class ExecAgent:
     MAX_TOOL_ROUNDS = 15
 
     def __init__(self, config: dict):
-        exec_cfg = config["agents"]["exec"]
+        exec_cfg = config.get("agents", {}).get("exec", {})
+        if not exec_cfg:
+            raise ValueError("config 中缺少 agents.exec 配置段，请检查 config.yaml")
+
+        # 必填字段校验
+        for field in ("base_url", "api_key", "model"):
+            if not exec_cfg.get(field):
+                raise ValueError(f"config[agents.exec].{field} 不能为空，请检查 config.yaml")
+
+        self.base_url = exec_cfg["base_url"]
+        self.api_key = exec_cfg["api_key"]
+        self.model = exec_cfg["model"]
+        self.temperature = float(exec_cfg.get("temperature", 0.1))
+        self.max_tokens = int(exec_cfg.get("max_tokens", 8192))
 
         self.client = AsyncOpenAI(
-            base_url=exec_cfg["base_url"],
-            api_key=exec_cfg["api_key"],
+            base_url=self.base_url,
+            api_key=self.api_key,
         )
-        self.model = exec_cfg["model"]
         self.config = config
         self.shared_dir = config.get("storage", {}).get("shared_dir", "./shared")
 
@@ -217,7 +229,9 @@ class ExecAgent:
             "bmc_command_rag": self._tool_bmc_command_rag,
         }
 
-        print(f"[Exec] Agent 初始化完成 (model={self.model}, bmc={self.bmc_host}:{self.bmc_port})")
+        print(f"[Exec Agent] 使用模型: {self.model} | base_url: {self.base_url}")
+        print(f"[Exec Agent] 参数: temperature={self.temperature}, max_tokens={self.max_tokens}")
+        print(f"[Exec Agent] 目标 BMC: {self.bmc_host}:{self.bmc_port}")
 
     # ==================================================================
     # httpx 生命周期
@@ -228,8 +242,9 @@ class ExecAgent:
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
                 base_url=f"https://{self.bmc_host}:{self.bmc_port}",
-                verify=False,  # 自签证书环境
+                verify=False,     # 自签证书环境
                 timeout=30.0,
+                trust_env=False,  # 禁用系统代理，避免 Windows 代理干扰
             )
         return self._http_client
 
@@ -366,6 +381,8 @@ class ExecAgent:
             model=self.model,
             messages=messages,
             tools=TOOL_DEFINITIONS,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
             stream=True,
         )
 
@@ -755,6 +772,35 @@ class ExecAgent:
         }
         for key, value in defaults.items():
             data.setdefault(key, value)
+
+        # 修复 prerequisites: 字符串 -> dict
+        prereqs = data.get("prerequisites", [])
+        repaired_prereqs = []
+        for p in prereqs:
+            if isinstance(p, str):
+                repaired_prereqs.append({"name": p, "status": "checked"})
+            elif isinstance(p, dict):
+                repaired_prereqs.append(p)
+        data["prerequisites"] = repaired_prereqs
+
+        # 修复 steps 中 evidence 格式
+        for step in data.get("steps", []):
+            ev_list = step.get("evidence", [])
+            repaired_ev = []
+            for idx, ev in enumerate(ev_list):
+                if isinstance(ev, dict):
+                    if "evidence_id" not in ev:
+                        ev["evidence_id"] = f"{step.get('step_id', 'unknown')}_ev_{idx+1:03d}"
+                    if "step_id" not in ev:
+                        ev["step_id"] = step.get("step_id", "unknown")
+                    if "evidence_type" not in ev:
+                        ev["evidence_type"] = ev.get("type", "unknown")
+                    if "content" not in ev:
+                        ev["content"] = json.dumps(ev.get("data", ev.get("description", "")), ensure_ascii=False)
+                    if "captured_at" not in ev:
+                        ev["captured_at"] = datetime.now().isoformat()
+                    repaired_ev.append(ev)
+            step["evidence"] = repaired_ev
 
         try:
             return ExecutionRecord.model_validate(data)

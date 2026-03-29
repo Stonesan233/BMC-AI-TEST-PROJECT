@@ -11,7 +11,6 @@ import argparse
 import asyncio
 import sys
 from datetime import datetime
-from itertools import count
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -20,10 +19,8 @@ import yaml
 from src.core.schemas import (
     ExecutionRecord,
     TestResult,
-    StepRecord,
     StepJudgment,
     StepStatus,
-    Evidence,
 )
 from src.utils.file_handler import (
     ensure_shared_dirs,
@@ -31,9 +28,7 @@ from src.utils.file_handler import (
     save_execution_record,
     save_test_result,
 )
-
-# 全局执行计数器，确保 execution_id 唯一
-_execution_counter = count(1)
+from src.agents.exec_agent import ExecAgent
 
 
 # ============================================================
@@ -88,203 +83,23 @@ def group_cases_by_batch(
     return batches
 
 
-def generate_execution_id() -> str:
-    """生成唯一执行记录 ID（含毫秒 + 计数器）"""
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    seq = next(_execution_counter)
-    return f"exec_{ts}_{seq:03d}"
-
-
 # ============================================================
-# TODO: 调用 Test_Exec Agent（批量版本）
-#
-# 未来实现位置: src/exec_agent.py
-#
-# 功能描述：
-#   调用 Test_Exec Agent 执行一批用例（1~3个）
-#
-# 实现步骤：
-#   1. 将整个 batch 一起发送给 Exec Agent
-#   2. Exec Agent 内部处理批量执行 + RAG
-#   3. 返回 ExecutionRecord 列表
-#
-# 当前为占位实现：基于用例中的步骤定义构建模拟 ExecutionRecord
+# 调用 Test_Exec Agent（真实 LLM 版本）
 # ============================================================
+
 async def call_exec_agent_batch(
+    agent: ExecAgent,
     batch: List[Dict[str, Any]],
     config: Dict[str, Any]
 ) -> List[ExecutionRecord]:
     """
-    调用 Test_Exec Agent 执行一批用例。
+    调用真实 Test_Exec Agent 执行一批用例。
 
-    TODO: 未来实现
-    - 构建 Exec Agent 请求（包含用例、环境、RAG 配置）
-    - 通过 HTTP API 调用 Exec Agent（MiniMax-M2.5 @ 192.168.1.100）
-    - 返回 ExecutionRecord 列表
+    通过 AsyncOpenAI + Tool Calling 与 LLM 交互，
+    使用 Redfish/IPMI/SSH 工具实际执行 BMC 操作。
     """
-    print(f"[TODO] 调用 Test_Exec Agent 执行 {len(batch)} 个用例")
-
-    records = []
-    for case in batch:
-        execution_id = generate_execution_id()
-        now = datetime.now()
-        case_steps = case.get("测试步骤", [])
-
-        # 如果用例有步骤定义，基于它构建模拟记录；否则用默认步骤
-        if case_steps:
-            steps = _build_mock_steps_from_case(case_steps, now)
-        else:
-            steps = _build_default_mock_steps(now)
-
-        record = ExecutionRecord(
-            execution_id=execution_id,
-            case_id=case.get("case_id", case.get("用例_编号", "unknown")),
-            case_name=case.get("name", case.get("用例_名称", "unknown")),
-            environment={
-                "bmc_host": config.get("target", {}).get("bmc_host", "unknown"),
-                "bmc_user": config.get("target", {}).get("bmc_user", "unknown"),
-            },
-            test_case_info={
-                "source_path": case.get("_source_path", ""),
-                "测试类型": case.get("测试类型", ""),
-                "优先级": case.get("优先级", ""),
-            },
-            prerequisites=[
-                {"name": "BMC 网络可达", "status": "completed", "details": "模拟：BMC 响应正常"},
-                {"name": "Administrator 账户登录", "status": "completed", "details": "模拟：认证成功"},
-            ],
-            steps=steps,
-            started_at=now,
-            completed_at=now,
-            overall_status="completed",
-        )
-        records.append(record)
-
-    return records
-
-
-def _build_mock_steps_from_case(
-    case_steps: List[Dict[str, Any]],
-    base_time: datetime,
-) -> List[StepRecord]:
-    """基于用例步骤定义构建模拟 StepRecord 列表"""
-    steps = []
-    for i, cs in enumerate(case_steps):
-        step_id = cs.get("step_id", f"step_{i+1:03d}")
-        desc = cs.get("description", f"步骤 {i+1}")
-        iface = cs.get("interface_preference", "redfish")
-        tool = iface if iface in ("redfish", "cli", "ipmi", "ssh") else "redfish"
-        expected = cs.get("expected", "执行成功")
-
-        # 模拟 Redfish 响应
-        stdout, stderr, http_status = _mock_response_for_step(cs, iface)
-
-        evidence = [
-            Evidence(
-                evidence_id=f"{step_id}_evidence_001",
-                step_id=step_id,
-                evidence_type=f"{iface}_response",
-                content=stdout,
-                metadata={"http_status": http_status} if http_status else {},
-                captured_at=base_time,
-            )
-        ]
-
-        step = StepRecord(
-            step_id=step_id,
-            description=desc,
-            tool=tool,
-            interface_preference=iface,
-            endpoint=cs.get("endpoint"),
-            method=cs.get("method"),
-            command=cs.get("command"),
-            expected=str(expected),
-            actual="模拟执行成功" if not stderr else f"模拟执行异常: {stderr[:80]}",
-            raw_stdout=stdout,
-            raw_stderr=stderr,
-            evidence=evidence,
-            status=StepStatus.COMPLETED if not stderr else StepStatus.FAILED,
-            http_status=http_status,
-            started_at=base_time,
-            completed_at=base_time,
-        )
-        steps.append(step)
-    return steps
-
-
-def _mock_response_for_step(
-    cs: Dict[str, Any], iface: str
-) -> tuple:
-    """根据步骤接口类型返回模拟的 (stdout, stderr, http_status)"""
-    if iface == "redfish":
-        endpoint = cs.get("endpoint", "")
-        method = cs.get("method", "GET").upper()
-        if "AccountService/Accounts" in endpoint and method == "GET":
-            stdout = (
-                '{"@odata.type": "#AccountService.AccountService", '
-                '"@odata.id": "/redfish/v1/AccountService/Accounts", '
-                '"Members": ['
-                '{"@odata.id": "/redfish/v1/AccountService/Accounts/2"}'
-                '], '
-                '"Members@odata.count": 1}'
-            )
-        elif "AccountService/Accounts" in endpoint and method == "POST":
-            stdout = (
-                '{"@odata.type": "#AccountService.AccountService", '
-                '"@MessageId": "Base.1.0.Success", '
-                '"Message": "The resource has been created successfully."}'
-            )
-        else:
-            stdout = (
-                '{"@odata.type": "#Service.v1_0_0.Service", '
-                '"ServiceVersion": "1.0.0", '
-                '"Status": {"Health": "OK", "State": "Enabled"}}'
-            )
-        return stdout, "", 200
-    elif iface == "cli":
-        stdout = "Success: operation completed."
-        return stdout, "", None
-    elif iface == "ipmi":
-        stdout = "Command completed successfully."
-        return stdout, "", None
-    else:
-        return "unknown interface", "", None
-
-
-def _build_default_mock_steps(base_time: datetime) -> List[StepRecord]:
-    """无步骤定义时使用默认模拟步骤"""
-    return [
-        StepRecord(
-            step_id="step_001",
-            description="查询 BMC 服务版本",
-            tool="redfish",
-            interface_preference="redfish",
-            endpoint="/redfish/v1",
-            method="GET",
-            expected="HTTP 200, 返回 ServiceVersion",
-            actual="HTTP 200",
-            raw_stdout=(
-                '{"@odata.type": "#Service.v1_0_0.Service", '
-                '"ServiceVersion": "1.0.0", '
-                '"Status": {"Health": "OK", "State": "Enabled"}}'
-            ),
-            raw_stderr="",
-            evidence=[
-                Evidence(
-                    evidence_id="step_001_evidence_001",
-                    step_id="step_001",
-                    evidence_type="redfish_response",
-                    content='{"@odata.type": "#Service.v1_0_0.Service", "ServiceVersion": "1.0.0"}',
-                    metadata={"http_status": 200},
-                    captured_at=base_time,
-                )
-            ],
-            status=StepStatus.COMPLETED,
-            http_status=200,
-            started_at=base_time,
-            completed_at=base_time,
-        ),
-    ]
+    print(f"[Exec] 调用 Test_Exec Agent 执行 {len(batch)} 个用例")
+    return await agent.execute_batch(batch, config)
 
 
 # ============================================================
@@ -409,6 +224,7 @@ async def run_single_case(
 # ============================================================
 
 async def run_batch(
+    exec_agent: ExecAgent,
     batch: List[Dict[str, Any]],
     batch_index: int,
     config: Dict[str, Any]
@@ -420,7 +236,7 @@ async def run_batch(
 
     # Step 1: 调用 Exec Agent（批量）
     try:
-        exec_records = await call_exec_agent_batch(batch, config)
+        exec_records = await call_exec_agent_batch(exec_agent, batch, config)
     except Exception as e:
         print(f"[ERROR] Exec Agent 调用失败: {e}")
         return [
@@ -483,16 +299,26 @@ async def main_async(args: argparse.Namespace) -> int:
         print("[WARN] 未加载到任何测试用例，退出")
         return 0
 
-    # 5. 分组执行
+    # 5. 初始化 Exec Agent
+    try:
+        exec_agent = ExecAgent(config)
+    except ValueError as e:
+        print(f"[ERROR] Exec Agent 初始化失败: {e}")
+        return 1
+
+    # 6. 分组执行
     batches = group_cases_by_batch(cases, exec_batch_size)
     print(f"分为 {len(batches)} 个批次执行\n")
 
     all_results: List[Dict[str, Any]] = []
-    for batch_index, batch in enumerate(batches):
-        batch_results = await run_batch(batch, batch_index, config)
-        all_results.extend(batch_results)
+    try:
+        for batch_index, batch in enumerate(batches):
+            batch_results = await run_batch(exec_agent, batch, batch_index, config)
+            all_results.extend(batch_results)
+    finally:
+        await exec_agent.close()
 
-    # 6. 执行摘要
+    # 7. 执行摘要
     elapsed = (datetime.now() - start_time).total_seconds()
     passed = sum(1 for r in all_results if r.get("overall_result") == "PASS")
     failed = sum(1 for r in all_results if r.get("overall_result") == "FAIL")
