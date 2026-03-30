@@ -29,30 +29,126 @@ from openai import AsyncOpenAI
 from pydantic import ValidationError
 
 from src.core.schemas import ExecutionRecord, StepRecord, StepStatus
+from src.tools.ipmi_tool import IPMITool
 from src.utils.file_handler import save_execution_record
 
 
 # ======================================================================
-# JSON 提取
+# JSON 提取（多策略，高鲁棒性）
 # ======================================================================
 
 def extract_json_from_response(text: str) -> Optional[str]:
     """
-    从 LLM 输出中提取 JSON。
+    从 LLM 输出中提取 JSON，尝试多种策略。
 
-    策略：
+    策略优先级：
     1. ```json ... ``` 代码块
-    2. 最外层 { } 配对
+    2. ``` ... ``` 代码块（无语言标记）
+    3. 括号配对提取最大 { } 块
+    4. 逐行扫描找 { 开头的行块
     """
+    if not text or not text.strip():
+        return None
+
+    # 策略 1: ```json ... ```
     match = re.search(r"```json\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
     if match:
-        return match.group(1).strip()
+        candidate = match.group(1).strip()
+        if candidate.startswith("{"):
+            return candidate
 
-    start, end = text.find("{"), text.rfind("}")
+    # 策略 2: ``` ... ```（无语言标记）
+    match = re.search(r"```\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if match:
+        candidate = match.group(1).strip()
+        if candidate.startswith("{"):
+            return candidate
+
+    # 策略 3: 括号配对（找最大顶层 { } 块）
+    result = _extract_balanced_json(text)
+    if result:
+        return result
+
+    # 策略 4: 找第一个 { 到最后一个 }，暴力截取
+    start = text.find("{")
+    end = text.rfind("}")
     if start != -1 and end > start:
         return text[start : end + 1]
 
     return None
+
+
+def _extract_balanced_json(text: str) -> Optional[str]:
+    """
+    通过括号配对提取文本中的顶层 JSON 对象。
+
+    从第一个 { 开始，追踪括号平衡，找到最外层闭合 }。
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    depth = 0
+    in_string = False
+    escape_next = False
+    i = start
+
+    while i < len(text):
+        ch = text[i]
+
+        if escape_next:
+            escape_next = False
+            i += 1
+            continue
+
+        if ch == "\\":
+            if in_string:
+                escape_next = True
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = not in_string
+            i += 1
+            continue
+
+        if in_string:
+            i += 1
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+
+        i += 1
+
+    return None
+
+
+def _sanitize_json_string(json_str: str) -> str:
+    """
+    清理 JSON 字符串中的常见格式问题。
+
+    处理：尾逗号、单引号、注释、控制字符。
+    """
+    s = json_str
+
+    # 移除 JS 风格单行注释 (// ...)
+    s = re.sub(r"//[^\n]*", "", s)
+
+    # 移除 JS 风格多行注释 (/* ... */)
+    s = re.sub(r"/\*.*?\*/", "", s, flags=re.DOTALL)
+
+    # 移除尾部逗号（}, ] 前的逗号）
+    s = re.sub(r",\s*([}\]])", r"\1", s)
+
+    # 移除控制字符（保留 \n \r \t）
+    s = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", s)
+
+    return s.strip()
 
 
 # ======================================================================
@@ -233,9 +329,19 @@ class ExecAgent:
         self.bmc_port = target.get("bmc_port", 443)
         self.bmc_user = target.get("bmc_user", "Administrator")
         self.bmc_password = target.get("bmc_password", "")
+        self.ipmi_port = target.get("ipmi_port", 623)
 
         # httpx 客户端（禁用 SSL 验证，适配自签证书）
         self._http_client: Optional[httpx.AsyncClient] = None
+
+        # IPMI Tool 实例（pyghmi 后端）
+        self._ipmi_tool = IPMITool(
+            host=self.bmc_host,
+            port=self.ipmi_port,
+            user=self.bmc_user,
+            password=self.bmc_password,
+            cipher_suite=17,
+        )
 
         # Tool 分发表
         self._tool_handlers = {
@@ -247,7 +353,7 @@ class ExecAgent:
 
         print(f"[Exec Agent] 使用模型: {self.model} | base_url: {self.base_url}")
         print(f"[Exec Agent] 参数: temperature={self.temperature}, max_tokens={self.max_tokens}")
-        print(f"[Exec Agent] 目标 BMC: {self.bmc_host}:{self.bmc_port}")
+        print(f"[Exec Agent] 目标 BMC: {self.bmc_host}:{self.bmc_port} | IPMI port: {self.ipmi_port}")
 
     # ==================================================================
     # .env 文件加载
@@ -289,6 +395,7 @@ class ExecAgent:
         """清理资源。"""
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
+        self._ipmi_tool.close()
 
     # ==================================================================
     # 公开接口
@@ -595,55 +702,42 @@ class ExecAgent:
 
     async def _tool_ipmi_command(self, args: dict) -> str:
         """
-        真实 IPMI 命令。
+        真实 IPMI 命令（pyghmi 后端）。
 
-        通过 subprocess 调用 ipmitool。
+        通过 IPMITool (pyghmi) 发送 IPMI 命令。
+        支持 cipher_suite=17（openUBMC 必须）。
         """
         command = args.get("command", "")
         timeout = args.get("timeout", 30)
 
-        # 构建 ipmitool 命令
-        ipmi_cmd = [
-            "ipmitool",
-            "-H", self.bmc_host,
-            "-U", self.bmc_user,
-            "-P", self.bmc_password,
-            "-I", "lanplus",
-        ] + command.split()
+        if not command.strip():
+            return json.dumps(
+                {"error": "IPMI 命令为空"},
+                ensure_ascii=False,
+            )
+
+        print(f"  [IPMI] cmd: {command} | host={self.bmc_host}:{self.ipmi_port} | cipher=17")
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *ipmi_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-
-            return json.dumps(
-                {
-                    "command": command,
-                    "exit_code": proc.returncode,
-                    "stdout": stdout.decode("utf-8", errors="replace").strip(),
-                    "stderr": stderr.decode("utf-8", errors="replace").strip(),
-                },
-                ensure_ascii=False,
-            )
-        except FileNotFoundError:
-            return json.dumps(
-                {"error": "ipmitool 未安装或不在 PATH 中"},
-                ensure_ascii=False,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            return json.dumps(
-                {"error": f"IPMI 命令超时 ({timeout}s): {command}"},
-                ensure_ascii=False,
-            )
+            result = await self._ipmi_tool.execute(command, timeout=timeout)
         except Exception as e:
             return json.dumps(
                 {"error": f"IPMI 执行异常: {e}"},
                 ensure_ascii=False,
             )
+
+        if not result.success:
+            return json.dumps(
+                {
+                    "error": result.error,
+                    "command": result.command,
+                    "exit_code": result.exit_code,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        return IPMITool.to_json(result)
 
     async def _tool_ssh_exec(self, args: dict) -> str:
         """
@@ -769,31 +863,54 @@ class ExecAgent:
     # ==================================================================
 
     def _parse_record(self, content: str, case: dict, started_at: datetime) -> ExecutionRecord:
-        """从 LLM 输出解析 ExecutionRecord。尝试：直接解析 -> 修复 -> fallback"""
+        """
+        从 LLM 输出解析 ExecutionRecord。
+
+        尝试链：提取 JSON -> 清理 -> 直接解析 -> 清理后解析 -> 修复解析 -> fallback
+        """
         json_str = extract_json_from_response(content)
 
         if json_str:
-            try:
-                record = ExecutionRecord.model_validate(json.loads(json_str))
-                # 强制覆盖时间戳和 ID（不信任 LLM 生成的值）
-                now = datetime.now()
-                record.execution_id = f"exec_{now.strftime('%Y%m%d_%H%M%S')}"
-                record.started_at = started_at
-                record.completed_at = now
-                print("[Exec] 成功解析 ExecutionRecord")
-                return record
-            except (json.JSONDecodeError, ValidationError):
-                pass
-
+            # 第一轮：直接解析
             try:
                 data = json.loads(json_str)
+                record = ExecutionRecord.model_validate(data)
+                record = self._force_override_timestamps(record, started_at)
+                print("[Exec] 成功解析 ExecutionRecord")
+                return record
+            except (json.JSONDecodeError, ValidationError) as e:
+                print(f"[Exec] 直接解析失败: {e}")
+
+            # 第二轮：清理后解析
+            cleaned = _sanitize_json_string(json_str)
+            if cleaned != json_str:
+                try:
+                    data = json.loads(cleaned)
+                    record = ExecutionRecord.model_validate(data)
+                    record = self._force_override_timestamps(record, started_at)
+                    print("[Exec] 清理后解析成功")
+                    return record
+                except (json.JSONDecodeError, ValidationError):
+                    pass
+
+            # 第三轮：修复解析
+            try:
+                data = json.loads(cleaned if cleaned else json_str)
+            except json.JSONDecodeError:
+                # 最后一次尝试：用更宽松的方式解析
+                data = None
+
+            if data is None:
+                # 尝试修复不可解析的 JSON
+                data = self._try_fix_malformed_json(cleaned if cleaned else json_str)
+
+            if data:
                 record = self._repair_and_validate(data, case, started_at)
                 if record:
                     print("[Exec] 修复后解析成功")
                     return record
-            except Exception:
-                pass
 
+        # 所有解析尝试失败，生成 fallback
         print("[Exec] 未找到有效 JSON，生成 fallback 记录")
         return self._build_failure_record(
             case, started_at,
@@ -802,23 +919,54 @@ class ExecAgent:
             error_msg="模型输出无法解析为 ExecutionRecord JSON",
         )
 
+    def _force_override_timestamps(self, record: ExecutionRecord, started_at: datetime) -> ExecutionRecord:
+        """强制覆盖时间戳和 execution_id（不信任 LLM）。"""
+        now = datetime.now()
+        record.execution_id = f"exec_{now.strftime('%Y%m%d_%H%M%S')}"
+        record.started_at = started_at
+        record.completed_at = now
+        return record
+
+    def _try_fix_malformed_json(self, raw: str) -> Optional[dict]:
+        """
+        尝试修复严重格式错误的 JSON。
+
+        策略：单引号替换、属性名加引号、宽松解析。
+        """
+        s = raw
+
+        # 尝试替换单引号为双引号（谨慎处理，避免破坏字符串内容）
+        # 只替捓名值对中的单引号
+        s = re.sub(r":\s*'([^']*)'", r': "\1"', s)
+
+        # 尝试给裸属性名加引号（如 {name: "value"} -> {"name": "value"}）
+        s = re.sub(r"(\{|,)\s*([a-zA-Z_]\w*)\s*:", r'\1 "\2":', s)
+
+        try:
+            return json.loads(s)
+        except (json.JSONDecodeError, Exception):
+            return None
+
     def _repair_and_validate(self, data: dict, case: dict, started_at: datetime) -> Optional[ExecutionRecord]:
         """补全/修复字段后验证。时间戳等关键字段强制使用真实值。"""
 
-        # 强制覆盖：时间戳和 ID 由框架控制，不信任 LLM 生成的值
+        # 强制覆盖：时间戳和 ID 由框架控制
         now = datetime.now()
         data["execution_id"] = f"exec_{now.strftime('%Y%m%d_%H%M%S')}"
         data["started_at"] = started_at.isoformat()
         data["completed_at"] = now.isoformat()
 
-        # 补全缺失字段（不覆盖已有值）
-        defaults = {
-            "case_id": case.get("case_id", case.get("用例_编号", "unknown")),
-            "case_name": case.get("name", case.get("用例_名称", "unknown")),
-            "overall_status": "completed",
-        }
-        for key, value in defaults.items():
-            data.setdefault(key, value)
+        # 补全缺失字段
+        data.setdefault("case_id", case.get("case_id", case.get("用例_编号", "unknown")))
+        data.setdefault("case_name", case.get("name", case.get("用例_名称", "unknown")))
+        data.setdefault("overall_status", "completed")
+        data.setdefault("environment", {})
+        data.setdefault("test_case_info", {})
+        data.setdefault("steps", [])
+
+        # 修复 environment
+        if not isinstance(data["environment"], dict):
+            data["environment"] = {"raw": str(data["environment"])}
 
         # 修复 prerequisites: 字符串 -> dict
         prereqs = data.get("prerequisites", [])
@@ -830,30 +978,77 @@ class ExecAgent:
                 repaired_prereqs.append(p)
         data["prerequisites"] = repaired_prereqs
 
-        # 修复 steps 中 evidence 格式
+        # 修复 steps
         for step in data.get("steps", []):
-            ev_list = step.get("evidence", [])
-            repaired_ev = []
-            for idx, ev in enumerate(ev_list):
-                if isinstance(ev, dict):
-                    if "evidence_id" not in ev:
-                        ev["evidence_id"] = f"{step.get('step_id', 'unknown')}_ev_{idx+1:03d}"
-                    if "step_id" not in ev:
-                        ev["step_id"] = step.get("step_id", "unknown")
-                    if "evidence_type" not in ev:
-                        ev["evidence_type"] = ev.get("type", "unknown")
-                    if "content" not in ev:
-                        ev["content"] = json.dumps(ev.get("data", ev.get("description", "")), ensure_ascii=False)
-                    if "captured_at" not in ev:
-                        ev["captured_at"] = datetime.now().isoformat()
-                    repaired_ev.append(ev)
-            step["evidence"] = repaired_ev
+            if not isinstance(step, dict):
+                continue
+            self._repair_step(step)
+
+        # 确保 steps 非空（Pydantic 可能要求至少一个 step）
+        if not data["steps"]:
+            data["steps"] = [{
+                "step_id": "step_001",
+                "description": "自动生成的空步骤（原始输出解析失败）",
+                "tool": "unknown",
+                "expected": "ExecutionRecord JSON",
+                "actual": "解析失败",
+                "status": "failed",
+                "started_at": started_at.isoformat(),
+                "completed_at": now.isoformat(),
+            }]
 
         try:
             return ExecutionRecord.model_validate(data)
         except ValidationError as e:
             print(f"[Exec] 修复后仍无法解析: {e}")
             return None
+
+    def _repair_step(self, step: dict) -> None:
+        """修复单个 step 中常见的格式问题。"""
+        # 修复 evidence 格式
+        ev_list = step.get("evidence", [])
+        if not isinstance(ev_list, list):
+            ev_list = []
+        repaired_ev = []
+        for idx, ev in enumerate(ev_list):
+            if not isinstance(ev, dict):
+                continue
+            repaired_ev.append(self._repair_evidence(ev, step.get("step_id", "unknown"), idx))
+        step["evidence"] = repaired_ev
+
+        # 修复 status：枚举值兼容
+        status_raw = step.get("status", "completed")
+        if isinstance(status_raw, str):
+            status_lower = status_raw.lower()
+            if status_lower in ("completed", "success", "ok", "pass"):
+                step["status"] = "completed"
+            elif status_lower in ("failed", "failure", "error", "fail"):
+                step["status"] = "failed"
+            elif status_lower in ("skipped", "skip"):
+                step["status"] = "skipped"
+            else:
+                step["status"] = "completed"
+
+        # 确保必填字段存在
+        step.setdefault("tool", "unknown")
+        step.setdefault("expected", "")
+
+    def _repair_evidence(self, ev: dict, step_id: str, idx: int) -> dict:
+        """修复单个 evidence 对象，确保 5 个必填字段都存在。"""
+        ev.setdefault("evidence_id", f"{step_id}_ev_{idx + 1:03d}")
+        ev.setdefault("step_id", step_id)
+        # evidence_type: 多种 LLM 写法兼容
+        if "evidence_type" not in ev:
+            ev["evidence_type"] = ev.get("type", ev.get("evidenceType", "unknown"))
+        # content: 多种 LLM 写法兼容
+        if "content" not in ev:
+            content = ev.get("data", ev.get("description", ev.get("value", "")))
+            if isinstance(content, (dict, list)):
+                content = json.dumps(content, ensure_ascii=False)
+            ev["content"] = str(content)
+        ev.setdefault("captured_at", datetime.now().isoformat())
+        ev.setdefault("metadata", {})
+        return ev
 
     # ==================================================================
     # Failure 记录 & 持久化
@@ -894,6 +1089,7 @@ class ExecAgent:
             environment={
                 "bmc_host": self.bmc_host,
                 "bmc_port": self.bmc_port,
+                "ipmi_port": self.ipmi_port,
                 "bmc_user": self.bmc_user,
             },
             test_case_info={"source_path": case.get("_source_path", ""), "failure": True},

@@ -1,0 +1,38 @@
+{
+  "execution_id": "exec_20260330_161844",
+  "case_id": "TC-IPMI-001",
+  "case_name": "IPMI MC Info - 查询 BMC 版本信息",
+  "overall_result": "PASS",
+  "confidence": 0.9,
+  "step_results": [
+    {
+      "step_id": "step_001",
+      "result": "PASS",
+      "confidence": 0.9,
+      "reason": "模拟判断：步骤 '执行 mc info 查询 BMC 设备信息' 执行完成",
+      "expected_match": true,
+      "concerns": []
+    },
+    {
+      "step_id": "step_002",
+      "result": "PASS",
+      "confidence": 0.9,
+      "reason": "模拟判断：步骤 '验证 mc info 返回字段完整性' 执行完成",
+      "expected_match": true,
+      "concerns": []
+    }
+  ],
+  "prerequisite_check": {
+    "result": "PASS",
+    "failed_items": []
+  },
+  "environment_recovery": {
+    "recovered": true,
+    "warnings": []
+  },
+  "judge_notes": [
+    "共 2 个步骤，2 个通过",
+    "所有步骤执行成功，预期与实际匹配",
+    "(当前为模拟判断，未来由 Judge Agent 严格验证)"
+  ]
+}

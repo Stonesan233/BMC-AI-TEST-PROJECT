@@ -1,0 +1,128 @@
+{
+  "execution_id": "exec_20260330_161844",
+  "case_id": "TC-IPMI-001",
+  "case_name": "IPMI MC Info - 查询 BMC 版本信息",
+  "environment": {
+    "bmc_host": "172.23.17.208",
+    "bmc_user": "Administrator"
+  },
+  "test_case_info": {
+    "test_type": "集成测试",
+    "priority": "P0"
+  },
+  "prerequisites": [
+    {
+      "name": "BMC IPMI 接口可达（默认端口 10623）",
+      "status": "completed"
+    },
+    {
+      "name": "RMCP+ 认证正常（Administrator 账户可用）",
+      "status": "completed"
+    },
+    {
+      "name": "cipher_suite=17 已配置（openUBMC 环境必须）",
+      "status": "completed"
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "description": "执行 mc info 查询 BMC 设备信息",
+      "tool": "ipmi",
+      "interface_preference": "ipmi",
+      "endpoint": null,
+      "method": null,
+      "request_body": null,
+      "command": "mc info",
+      "expected": {
+        "exit_code": 0,
+        "success": true,
+        "parsed_data_contains": [
+          "manufacturer_id",
+          "firmware_revision",
+          "product_id",
+          "device_id"
+        ]
+      },
+      "actual": {
+        "exit_code": 0,
+        "success": true,
+        "parsed_data": {
+          "device_id": 1,
+          "device_revision": 1,
+          "provides_device_sdrs": true,
+          "device_available": true,
+          "firmware_revision": "26.3",
+          "ipmi_version": "0.2",
+          "manufacturer_id": 514991,
+          "product_id": 0,
+          "auxiliary_revision": "0.0"
+        }
+      },
+      "raw_stdout": "{\"success\": true, \"command\": \"mc info\", \"exit_code\": 0, \"raw_output\": \"Device ID                  : 1\\nDevice Revision            : 1\\nFirmware Revision          : 26.3\\nIPMI Version               : 0.2\\nManufacturer ID            : 514991\\nProduct ID                 : 0\\nDevice Available           : yes\\nProvides Device SDRs       : yes\\nAuxiliary Revision         : 0.0\", \"parsed_data\": {\"device_id\": 1, \"device_revision\": 1, \"provides_device_sdrs\": true, \"device_available\": true, \"firmware_revision\": \"26.3\", \"ipmi_version\": \"0.2\", \"manufacturer_id\": 514991, \"product_id\": 0, \"auxiliary_revision\": \"0.0\"}, \"evidence\": {\"evidence_type\": \"ipmi_output\", \"content\": \"Device ID                  : 1\\nDevice Revision            : 1\\nFirmware Revision          : 26.3\\nIPMI Version               : 0.2\\nManufacturer ID            : 514991\\nProduct ID                 : 0\\nDevice Available           : yes\\nProvides Device SDRs       : yes\\nAuxiliary Revision         : 0.0\", \"metadata\": {\"command\": \"mc info\", \"host\": \"172.23.17.208\", \"port\": 10623, \"cipher_suite\": 17, \"device_id\": 1, \"device_revision\": 1, \"provides_device_sdrs\": true, \"device_available\": true, \"firmware_revision\": \"26.3\", \"ipmi_version\": \"0.2\", \"manufacturer_id\": 514991, \"product_id\": 0, \"auxiliary_revision\": \"0.0\"}, \"captured_at\": \"2026-03-30T16:16:00.415780\"}}",
+      "raw_stderr": "",
+      "evidence": [
+        {
+          "evidence_id": "step_001_evidence_001",
+          "step_id": "step_001",
+          "evidence_type": "ipmi_output",
+          "content": "Device ID                  : 1\nDevice Revision            : 1\nFirmware Revision          : 26.3\nIPMI Version               : 0.2\nManufacturer ID            : 514991\nProduct ID                 : 0\nDevice Available           : yes\nProvides Device SDRs       : yes\nAuxiliary Revision         : 0.0",
+          "metadata": {},
+          "captured_at": "2026-03-30T16:16:00.415780"
+        }
+      ],
+      "status": "completed",
+      "http_status": null,
+      "error_message": null,
+      "started_at": "2026-03-30T16:16:00",
+      "completed_at": "2026-03-30T16:16:00.415780"
+    },
+    {
+      "step_id": "step_002",
+      "description": "验证 mc info 返回字段完整性",
+      "tool": "ipmi",
+      "interface_preference": "ipmi",
+      "endpoint": null,
+      "method": null,
+      "request_body": null,
+      "command": "mc info",
+      "expected": {
+        "raw_output_contains": [
+          "Device ID",
+          "Firmware Revision",
+          "Manufacturer ID",
+          "Product ID"
+        ]
+      },
+      "actual": {
+        "raw_output": "Device ID                  : 1\nDevice Revision            : 1\nFirmware Revision          : 26.3\nIPMI Version               : 0.2\nManufacturer ID            : 514991\nProduct ID                 : 0\nDevice Available           : yes\nProvides Device SDRs       : yes\nAuxiliary Revision         : 0.0",
+        "contains_fields": [
+          "Device ID",
+          "Firmware Revision",
+          "Manufacturer ID",
+          "Product ID"
+        ]
+      },
+      "raw_stdout": "{\"success\": true, \"command\": \"mc info\", \"exit_code\": 0, \"raw_output\": \"Device ID                  : 1\\nDevice Revision            : 1\\nFirmware Revision          : 26.3\\nIPMI Version               : 0.2\\nManufacturer ID            : 514991\\nProduct ID                 : 0\\nDevice Available           : yes\\nProvides Device SDRs       : yes\\nAuxiliary Revision         : 0.0\", \"parsed_data\": {\"device_id\": 1, \"device_revision\": 1, \"provides_device_sdrs\": true, \"device_available\": true, \"firmware_revision\": \"26.3\", \"ipmi_version\": \"0.2\", \"manufacturer_id\": 514991, \"product_id\": 0, \"auxiliary_revision\": \"0.0\"}, \"evidence\": {\"evidence_type\": \"ipmi_output\", \"content\": \"Device ID                  : 1\\nDevice Revision            : 1\\nFirmware Revision          : 26.3\\nIPMI Version               : 0.2\\nManufacturer ID            : 514991\\nProduct ID                 : 0\\nDevice Available           : yes\\nProvides Device SDRs       : yes\\nAuxiliary Revision         : 0.0\", \"metadata\": {\"command\": \"mc info\", \"host\": \"172.23.17.208\", \"port\": 10623, \"cipher_suite\": 17, \"device_id\": 1, \"device_revision\": 1, \"provides_device_sdrs\": true, \"device_available\": true, \"firmware_revision\": \"26.3\", \"ipmi_version\": \"0.2\", \"manufacturer_id\": 514991, \"product_id\": 0, \"auxiliary_revision\": \"0.0\"}, \"captured_at\": \"2026-03-30T16:16:25.307236\"}}",
+      "raw_stderr": "",
+      "evidence": [
+        {
+          "evidence_id": "step_002_evidence_001",
+          "step_id": "step_002",
+          "evidence_type": "ipmi_output",
+          "content": "Device ID                  : 1\nDevice Revision            : 1\nFirmware Revision          : 26.3\nIPMI Version               : 0.2\nManufacturer ID            : 514991\nProduct ID                 : 0\nDevice Available           : yes\nProvides Device SDRs       : yes\nAuxiliary Revision         : 0.0",
+          "metadata": {},
+          "captured_at": "2026-03-30T16:16:25.307236"
+        }
+      ],
+      "status": "completed",
+      "http_status": null,
+      "error_message": null,
+      "started_at": "2026-03-30T16:16:25",
+      "completed_at": "2026-03-30T16:16:25.307236"
+    }
+  ],
+  "started_at": "2026-03-30T16:15:24.473689",
+  "completed_at": "2026-03-30T16:18:44.581012",
+  "overall_status": "completed"
+}

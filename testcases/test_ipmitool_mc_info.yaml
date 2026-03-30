@@ -1,0 +1,30 @@
+# openUBMC 测试用例 - IPMI MC Info
+
+用例_编号: "TC-IPMI-001"
+用例_名称: "IPMI MC Info - 查询 BMC 版本号"
+测试类型: "集成测试"
+优先级: "P0"
+
+预置条件:
+  - BMC IPMI 接口可达（127.0.0.1:10623）
+  - RMCP+ 认证正常（Administrator / Admin@90000）
+
+测试步骤:
+  - step_id: "step_001"
+    description: "执行 ipmitool mc info 查询 BMC 版本信息"
+    interface_preference: "ipmi"
+    command: "mc info"
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - "Manufacturer ID"
+        - "Product ID"
+        - "Device ID"
+
+预期结果:
+  - ipmitool 命令执行成功（exit code 0）
+  - 输出包含 Manufacturer ID 字段
+  - 输出包含 Product ID 字段
+  - 输出包含 Device ID 字段
+
+清理步骤: []

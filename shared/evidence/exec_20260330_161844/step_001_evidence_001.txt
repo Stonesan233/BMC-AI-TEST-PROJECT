@@ -1,0 +1,9 @@
+Device ID                  : 1
+Device Revision            : 1
+Firmware Revision          : 26.3
+IPMI Version               : 0.2
+Manufacturer ID            : 514991
+Product ID                 : 0
+Device Available           : yes
+Provides Device SDRs       : yes
+Auxiliary Revision         : 0.0
