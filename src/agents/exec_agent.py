@@ -15,6 +15,7 @@ openUBMC AI 测试框架 - Test_Exec Agent（真实 LLM 调用版本）
 
 import asyncio
 import json
+import logging
 import os
 import re
 import ssl
@@ -30,7 +31,43 @@ from pydantic import ValidationError
 
 from src.core.schemas import ExecutionRecord, StepRecord, StepStatus
 from src.tools.ipmi_tool import IPMITool
+from src.tools.ssh_tool import SSHTool
 from src.utils.file_handler import save_execution_record
+
+# ======================================================================
+# 日志配置（实时写入文件 + 控制台）
+# ======================================================================
+
+logger = logging.getLogger("exec_agent")
+
+
+def setup_logging(log_dir: str = "./logs") -> None:
+    """初始化日志系统，同时输出到文件和控制台。"""
+    logger.setLevel(logging.DEBUG)
+
+    if logger.handlers:
+        return  # 已初始化，避免重复 handler
+
+    log_path = Path(log_dir)
+    log_path.mkdir(parents=True, exist_ok=True)
+    log_file = log_path / f"exec_agent_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    # 文件 handler：DEBUG 级别，实时 flush
+    fh = logging.FileHandler(str(log_file), encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+    ))
+
+    # 控制台 handler：INFO 级别
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+
+    logger.info(f"日志文件: {log_file}")
 
 
 # ======================================================================
@@ -208,26 +245,62 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "ssh_exec",
-            "description": "通过 SSH 在远程主机上执行命令。用于 BMC Shell 或主机控制台操作。",
+            "description": (
+                "通过 SSH 在远程主机上执行命令。支持两种模式：\n"
+                "1. 非交互式：提供 command 参数执行单条命令\n"
+                "2. 交互式：提供 interactions 参数执行需要交互的命令（如 ipmcset adduser）\n"
+                "BMC Shell 端口默认 10022。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "host": {"type": "string", "description": "目标主机 IP"},
                     "port": {
                         "type": "integer",
-                        "description": "SSH 端口（BMC Shell 默认 22，主机控制台默认 2200）",
-                        "default": 22,
+                        "description": "SSH 端口（BMC Shell 默认 10022，主机控制台默认 2200）",
+                        "default": 10022,
                     },
                     "user": {"type": "string", "description": "用户名"},
                     "password": {"type": "string", "description": "密码"},
-                    "command": {"type": "string", "description": "要执行的命令"},
+                    "command": {
+                        "type": "string",
+                        "description": "要执行的命令（非交互模式）",
+                    },
                     "timeout": {
                         "type": "integer",
                         "description": "超时时间（秒），默认 30",
                         "default": 30,
                     },
+                    "interactions": {
+                        "type": "array",
+                        "description": (
+                            "交互式命令的步骤序列。每步包含："
+                            "expect（等待的输出模式）、"
+                            "send（匹配后发送的文本）、"
+                            "is_password（是否为密码，日志中脱敏）"
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "expect": {
+                                    "type": "string",
+                                    "description": "等待的输出文本或正则模式",
+                                },
+                                "send": {
+                                    "type": "string",
+                                    "description": "匹配后发送的文本",
+                                },
+                                "is_password": {
+                                    "type": "boolean",
+                                    "description": "是否为密码（日志中脱敏）",
+                                    "default": False,
+                                },
+                            },
+                            "required": ["expect", "send"],
+                        },
+                    },
                 },
-                "required": ["host", "user", "password", "command"],
+                "required": ["host", "user", "password"],
             },
         },
     },
@@ -281,6 +354,10 @@ class ExecAgent:
     MAX_TOOL_ROUNDS = 15
 
     def __init__(self, config: dict):
+        # 初始化日志系统
+        log_dir = config.get("logging", {}).get("file", "./logs")
+        setup_logging(str(Path(log_dir).parent) if Path(log_dir).suffix else log_dir)
+
         exec_cfg = config.get("agents", {}).get("exec", {})
         if not exec_cfg:
             raise ValueError("config 中缺少 agents.exec 配置段，请检查 config.yaml")
@@ -292,12 +369,15 @@ class ExecAgent:
 
         # API Key: 支持环境变量引用（如 ${GLM_API_KEY}）或 .env 文件
         api_key_raw = exec_cfg.get("api_key", "")
+        logger.debug(f"api_key_raw = '{api_key_raw}'")
         if api_key_raw.startswith("${") and api_key_raw.endswith("}"):
             env_var = api_key_raw[2:-1].strip("}")
             api_key = os.environ.get(env_var, "")
+            logger.debug(f"env_var='{env_var}', from_os_environ={'yes' if api_key else 'no'}")
             if not api_key:
                 # 尝试从 .env 文件加载
                 api_key = self._load_dotenv(env_var)
+                logger.debug(f"from_dotenv={'yes' if api_key else 'no'}")
             if not api_key:
                 raise ValueError(
                     f"环境变量 {env_var} 未设置，请编辑项目根目录 .env 文件或设置环境变量 {env_var}"
@@ -308,6 +388,7 @@ class ExecAgent:
         self.base_url = exec_cfg["base_url"]
         self.api_key = api_key
         self.model = exec_cfg["model"]
+        logger.info(f"API key loaded: '{api_key[:8]}...{api_key[-4:]}' (len={len(api_key)})")
         self.temperature = float(exec_cfg.get("temperature", 0.1))
         self.max_tokens = int(exec_cfg.get("max_tokens", 8192))
 
@@ -330,6 +411,8 @@ class ExecAgent:
         self.bmc_user = target.get("bmc_user", "Administrator")
         self.bmc_password = target.get("bmc_password", "")
         self.ipmi_port = target.get("ipmi_port", 623)
+        self.ssh_port = target.get("ssh_port", 10022)
+        self.ssh_host = target.get("ssh_host", self.bmc_host)
 
         # httpx 客户端（禁用 SSL 验证，适配自签证书）
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -351,9 +434,9 @@ class ExecAgent:
             "bmc_command_rag": self._tool_bmc_command_rag,
         }
 
-        print(f"[Exec Agent] 使用模型: {self.model} | base_url: {self.base_url}")
-        print(f"[Exec Agent] 参数: temperature={self.temperature}, max_tokens={self.max_tokens}")
-        print(f"[Exec Agent] 目标 BMC: {self.bmc_host}:{self.bmc_port} | IPMI port: {self.ipmi_port}")
+        logger.info(f"使用模型: {self.model} | base_url: {self.base_url}")
+        logger.info(f"参数: temperature={self.temperature}, max_tokens={self.max_tokens}")
+        logger.info(f"目标 BMC: {self.bmc_host}:{self.bmc_port} | IPMI port: {self.ipmi_port} | SSH: {self.ssh_host}:{self.ssh_port}")
 
     # ==================================================================
     # .env 文件加载
@@ -408,7 +491,7 @@ class ExecAgent:
         流程：渲染 prompt -> LLM 对话（含 Tool Calling）-> 解析 -> 保存
         """
         case_name = case.get("name", case.get("用例_名称", "unknown"))
-        print(f"\n[Exec] 开始执行: {case_name}")
+        logger.info(f"开始执行: {case_name}")
 
         started_at = datetime.now()
 
@@ -422,7 +505,7 @@ class ExecAgent:
         try:
             final_content = await self._run_conversation(messages)
         except Exception as e:
-            print(f"[Exec] 执行异常: {e}")
+            logger.error(f"执行异常: {e}", exc_info=True)
             record = self._build_failure_record(case, started_at, error_msg=str(e))
             self._save_record(record)
             return record
@@ -433,20 +516,20 @@ class ExecAgent:
         # 自动保存
         self._save_record(record)
 
-        print(f"[Exec] 执行完成: {case_name} -> {record.overall_status}")
+        logger.info(f"执行完成: {case_name} -> {record.overall_status}")
         return record
 
     async def execute_batch(self, cases: list, config: dict) -> list:
         """批量执行测试用例（串行）。"""
-        print(f"\n[Exec] 批量执行 {len(cases)} 个用例")
+        logger.info(f"批量执行 {len(cases)} 个用例")
 
         records = []
         for i, case in enumerate(cases):
-            print(f"\n[Exec] --- 用例 {i + 1}/{len(cases)} ---")
+            logger.info(f"--- 用例 {i + 1}/{len(cases)} ---")
             try:
                 records.append(await self.execute(case, config))
             except Exception as e:
-                print(f"[Exec] 用例执行失败: {e}")
+                logger.error(f"用例执行失败: {e}")
                 records.append(
                     self._build_failure_record(case, datetime.now(), error_msg=str(e))
                 )
@@ -462,6 +545,8 @@ class ExecAgent:
         return self._system_template.render(
             bmc_host=target.get("bmc_host", "unknown"),
             bmc_user=target.get("bmc_user", "unknown"),
+            bmc_password=target.get("bmc_password", ""),
+            ssh_port=target.get("ssh_port", 10022),
             os_host=target.get("os_host"),
             os_user=target.get("os_user"),
             case=case,
@@ -498,7 +583,7 @@ class ExecAgent:
         """
         text = ""
         for round_num in range(self.MAX_TOOL_ROUNDS):
-            print(f"\n[Exec] --- 第 {round_num + 1} 轮 ---")
+            logger.info(f"--- 第 {round_num + 1} 轮 ---")
 
             text, tool_calls, finish_reason = await self._stream_response(messages)
 
@@ -509,7 +594,7 @@ class ExecAgent:
             # 执行 tool calls 并注入结果
             await self._process_tool_calls(messages, text, tool_calls)
 
-        print("[Exec] 达到最大对话轮次限制")
+        logger.warning("达到最大对话轮次限制")
         return text
 
     async def _stream_response(self, messages: list) -> tuple:
@@ -541,7 +626,7 @@ class ExecAgent:
             choice = chunk.choices[0]
             delta = choice.delta
 
-            # 文本 -> 实时打印
+            # 文本 -> 实时打印 + 写日志
             if delta.content:
                 print(delta.content, end="", flush=True)
                 text += delta.content
@@ -564,6 +649,14 @@ class ExecAgent:
                 finish_reason = choice.finish_reason
 
         print()  # 流式输出换行
+
+        # 实时写日志：LLM 完整文本输出
+        if text.strip():
+            logger.debug(f"LLM 文本输出 ({len(text)} chars): {text[:500]}")
+        if tool_calls:
+            tc_names = [tc["name"] for tc in tool_calls.values()]
+            logger.info(f"LLM 请求 Tool Calls: {tc_names}")
+
         return text, tool_calls, finish_reason
 
     async def _process_tool_calls(self, messages: list, text: str, tool_calls_map: dict) -> None:
@@ -602,10 +695,12 @@ class ExecAgent:
                 args = {}
 
             args_preview = json.dumps(args, ensure_ascii=False)[:120]
-            print(f"  [Exec] [Tool Call] {tool_name}({args_preview})")
+            logger.info(f"[Tool Call] {tool_name}({args_preview})")
 
             result = await self._dispatch_tool(tool_name, args)
-            print(f"  [Exec] [Tool Result] {str(result)[:200]}")
+            result_preview = str(result)[:500]
+            logger.info(f"[Tool Result] {tool_name} -> {result_preview[:200]}")
+            logger.debug(f"[Tool Result Full] {tool_name}: {result_preview}")
 
             messages.append({
                 "role": "tool",
@@ -716,7 +811,7 @@ class ExecAgent:
                 ensure_ascii=False,
             )
 
-        print(f"  [IPMI] cmd: {command} | host={self.bmc_host}:{self.ipmi_port} | cipher=17")
+        logger.info(f"[IPMI] cmd: {command} | host={self.bmc_host}:{self.ipmi_port} | cipher=17")
 
         try:
             result = await self._ipmi_tool.execute(command, timeout=timeout)
@@ -741,67 +836,59 @@ class ExecAgent:
 
     async def _tool_ssh_exec(self, args: dict) -> str:
         """
-        真实 SSH 执行。
+        SSH 命令执行（paramiko 后端）。
 
-        通过 subprocess 调用系统 ssh 命令。
-        使用 -o StrictHostKeyChecking=no 禁用主机密钥检查。
+        支持两种模式:
+        - 非交互式: 提供 command 参数
+        - 交互式: 提供 interactions 参数（expect/send 对列表）
         """
-        host = args.get("host", self.bmc_host)
-        port = args.get("port", 22)
-        user = args.get("user", self.bmc_user)
-        password = args.get("password", self.bmc_password)
+        # 所有连接参数强制使用 config 值
+        # LLM 经常编造错误密码和错误地址，不可信
+        host = self.ssh_host
+        port = self.ssh_port
+        user = self.bmc_user
+        password = self.bmc_password
         command = args.get("command", "")
         timeout = args.get("timeout", 30)
+        interactions = args.get("interactions")
 
-        ssh_cmd = [
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", f"ConnectTimeout={timeout}",
-            "-p", str(port),
-            f"{user}@{host}",
-            command,
-        ]
+        if not command.strip() and not interactions:
+            return json.dumps(
+                {"error": "必须提供 command 或 interactions 参数"},
+                ensure_ascii=False,
+            )
+
+        logger.info(f"[SSH] host={host}:{port} | cmd: {command[:80]}")
+        if interactions:
+            logger.info(f"[SSH] 交互模式: {len(interactions)} 步")
+
+        ssh = SSHTool(host=host, port=port, user=user, password=password)
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *ssh_cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=password.encode() + b"\n"),
-                timeout=timeout,
-            )
-
-            return json.dumps(
-                {
-                    "host": host,
-                    "port": port,
-                    "command": command,
-                    "exit_code": proc.returncode,
-                    "stdout": stdout.decode("utf-8", errors="replace").strip(),
-                    "stderr": stderr.decode("utf-8", errors="replace").strip(),
-                },
-                ensure_ascii=False,
-            )
-        except FileNotFoundError:
-            return json.dumps(
-                {"error": "ssh 命令未找到"},
-                ensure_ascii=False,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            return json.dumps(
-                {"error": f"SSH 连接超时 ({timeout}s): {host}:{port}"},
-                ensure_ascii=False,
+            result = await ssh.execute(
+                command, timeout=timeout, interactions=interactions
             )
         except Exception as e:
             return json.dumps(
                 {"error": f"SSH 执行异常: {e}"},
                 ensure_ascii=False,
             )
+
+        if not result.success:
+            return json.dumps(
+                {
+                    "error": result.error,
+                    "command": result.command,
+                    "host": result.host,
+                    "port": result.port,
+                    "mode": result.mode,
+                    "exit_code": result.exit_code,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
+        return SSHTool.to_json(result)
 
     async def _tool_bmc_command_rag(self, args: dict) -> str:
         """
@@ -876,10 +963,10 @@ class ExecAgent:
                 data = json.loads(json_str)
                 record = ExecutionRecord.model_validate(data)
                 record = self._force_override_timestamps(record, started_at)
-                print("[Exec] 成功解析 ExecutionRecord")
+                logger.info("成功解析 ExecutionRecord")
                 return record
             except (json.JSONDecodeError, ValidationError) as e:
-                print(f"[Exec] 直接解析失败: {e}")
+                logger.warning(f"直接解析失败: {e}")
 
             # 第二轮：清理后解析
             cleaned = _sanitize_json_string(json_str)
@@ -888,7 +975,7 @@ class ExecAgent:
                     data = json.loads(cleaned)
                     record = ExecutionRecord.model_validate(data)
                     record = self._force_override_timestamps(record, started_at)
-                    print("[Exec] 清理后解析成功")
+                    logger.info("清理后解析成功")
                     return record
                 except (json.JSONDecodeError, ValidationError):
                     pass
@@ -907,11 +994,11 @@ class ExecAgent:
             if data:
                 record = self._repair_and_validate(data, case, started_at)
                 if record:
-                    print("[Exec] 修复后解析成功")
+                    logger.info("修复后解析成功")
                     return record
 
         # 所有解析尝试失败，生成 fallback
-        print("[Exec] 未找到有效 JSON，生成 fallback 记录")
+        logger.warning("未找到有效 JSON，生成 fallback 记录")
         return self._build_failure_record(
             case, started_at,
             raw_output=content,
@@ -1000,7 +1087,7 @@ class ExecAgent:
         try:
             return ExecutionRecord.model_validate(data)
         except ValidationError as e:
-            print(f"[Exec] 修复后仍无法解析: {e}")
+            logger.error(f"修复后仍无法解析: {e}")
             return None
 
     def _repair_step(self, step: dict) -> None:
@@ -1105,4 +1192,4 @@ class ExecAgent:
         try:
             save_execution_record(record, self.shared_dir)
         except Exception as e:
-            print(f"[Exec] 保存记录失败（不影响返回）: {e}")
+            logger.error(f"保存记录失败（不影响返回）: {e}")

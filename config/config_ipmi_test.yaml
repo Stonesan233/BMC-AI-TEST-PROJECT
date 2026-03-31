@@ -1,17 +1,11 @@
-# openUBMC AI 测试框架 - IPMI 集成测试配置
+# openUBMC AI 测试框架 - IPMI/SSH 集成测试配置
 
-# Agent 配置（与主配置共用）
+# Agent 配置（MiniMax API）
 agents:
   exec:
-    base_url: "https://open.bigmodel.cn/api/paas/v4"
-    api_key: "${GLM_API_KEY}"
-    model: "glm-5"
-    temperature: 0.1
-    max_tokens: 8192
-  judge:
-    base_url: "https://open.bigmodel.cn/api/paas/v4"
-    api_key: "${GLM_API_KEY}"
-    model: "glm-5"
+    base_url: "https://api.minimaxi.com/v1"
+    api_key: "${MINIMAX_API_KEY}"
+    model: "MiniMax-M2.7"
     temperature: 0.1
     max_tokens: 8192
 
@@ -22,11 +16,13 @@ agent:
     enabled: true
     knowledge_base_path: "./knowledge_base"
 
-# IPMI 测试目标配置
+# 目标 BMC 配置（QEMU 环境端口转发）
 target:
   bmc_host: "172.23.17.208"
   bmc_port: 10443
   ipmi_port: 10623
+  ssh_host: "127.0.0.1"
+  ssh_port: 10022
   bmc_user: "Administrator"
   bmc_password: "Admin@90000"
 

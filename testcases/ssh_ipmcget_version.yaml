@@ -1,0 +1,27 @@
+# openUBMC 测试用例 - SSH ipmcget version
+
+用例_编号: "TC-SSH-001"
+用例_名称: "SSH ipmcget - 查询 BMC 版本信息"
+测试类型: "集成测试"
+优先级: "P0"
+
+预置条件:
+  - BMC SSH 接口可达（默认端口 10022）
+  - SSH 认证正常（Administrator 账户可用）
+
+测试步骤:
+  - step_id: "step_001"
+    description: "通过 SSH 执行 ipmcget -d version 查询 BMC 版本"
+    interface_preference: "cli"
+    command: "ipmcget -d version"
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - "version"
+
+预期结果:
+  - ipmcget 命令执行成功（exit_code=0）
+  - 输出包含 version 相关信息
+  - Evidence 类型为 ssh_output
+
+清理步骤: []

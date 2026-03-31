@@ -9,10 +9,18 @@ openUBMC AI 测试框架 - 极轻量启动脚本
 
 import argparse
 import asyncio
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+
+# Windows 控制台 UTF-8 输出（避免 LLM 输出中的 Unicode 字符导致 GBK 编码错误）
+if sys.stdout:
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if sys.stderr:
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 
 import yaml
 

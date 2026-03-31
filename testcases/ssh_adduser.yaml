@@ -1,0 +1,56 @@
+# openUBMC 测试用例 - SSH 交互式添加用户
+
+用例_编号: "TC-SSH-002"
+用例_名称: "SSH adduser - 交互式创建用户"
+测试类型: "功能测试"
+优先级: "P1"
+
+预置条件:
+  - BMC SSH 接口可达（默认端口 10022）
+  - SSH 认证正常（Administrator 账户可用）
+  - 当前用户数未达上限（15）
+
+测试步骤:
+  - step_id: "step_001"
+    description: "查询当前用户列表，确认用户数量"
+    interface_preference: "cli"
+    command: "ipmcget -d userlist"
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - "Administrator"
+
+  - step_id: "step_002"
+    description: "通过交互式 ipmcset 命令添加用户 testuser001"
+    interface_preference: "cli"
+    command: "ipmcset -d adduser -v testuser001"
+    interactions:
+      - expect: "[Pp]assword"
+        send: "Test@123456"
+        is_password: true
+        description: "等待密码提示后输入新用户密码"
+      - expect: "[Pp]assword"
+        send: "Test@123456"
+        is_password: true
+        description: "二次确认密码"
+    expected:
+      exit_code: 0
+      success: true
+
+  - step_id: "step_003"
+    description: "验证新用户 testuser001 出现在用户列表中"
+    interface_preference: "cli"
+    command: "ipmcget -d userlist"
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - "testuser001"
+
+预期结果:
+  - ipmcset 交互式命令执行成功
+  - 用户 testuser001 成功创建
+  - 用户 testuser001 出现在用户列表中
+  - 交互日志中密码已脱敏（显示为 ****）
+
+清理步骤:
+  - 删除测试用户 testuser001
