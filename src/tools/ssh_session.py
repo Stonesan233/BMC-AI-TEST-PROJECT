@@ -5,24 +5,15 @@ openUBMC AI 测试框架 - SSH Session（长连接 + 流式交互）
 使用 paramiko invoke_shell() 保持持久连接，
 支持 Agent 多轮 Tool Calling 中的动态交互。
 
-典型交互流程:
-    session = SSHSession(host, port, user, password)
-    session.connect()                          # 建立连接
-    session.send_command("ipmcget -d userlist")  # 执行命令
-    session.send_command("ipmcset -d adduser -v testuser")  # 启动交互命令
-    session.read_until(["[Pp]assword"])         # 等待密码提示
-    session.send_line("secret", is_password=True)  # 输入密码
-    session.read_until(["[Pp]assword"])         # 等待确认提示
-    session.send_line("secret", is_password=True)  # 确认密码
-    session.read_until(["#\\s*$"])              # 等待 shell prompt
-    result = session.disconnect()              # 关闭连接，获取 Evidence
+核心方法:
+- connect()        建立 SSH 连接
+- disconnect()     关闭连接
+- send_command()   执行命令并等待 shell prompt
+- send_line()      发送文本（不等待，用于交互式输入）
+- read_until()     等待指定输出模式（正则匹配）
+- read_available() 读取当前可用输出（非阻塞）
 
-设计:
-- 长连接保持：Session 在 disconnect() 前一直活跃
-- 流式读取：read_until / read_available 实时返回输出
-- 动态交互：Agent 根据当前输出决定下一步操作
-- 完整记录：interaction_history 保存所有交互步骤
-- 错误友好：连接断开、超时等场景均有明确错误信息
+Evidence 构建由 SSHSessionManager 负责，Session 只暴露原始数据。
 """
 
 import re
@@ -39,17 +30,17 @@ except ImportError:
 
 
 # ======================================================================
-# ANSI 转义码清理（与 ssh_tool.py 共享逻辑）
+# ANSI 转义码清理
 # ======================================================================
 
-_ANSI_PATTERN = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-_ANSI_OTHER = re.compile(r"\x1b\][^\x07]*\x07|\x1b[\(\)][B0UK]")
+_ANSI_CSI = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+_ANSI_OSC = re.compile(r"\x1b\][^\x07]*\x07|\x1b[\(\)][B0UK]")
 
 
-def _strip_ansi(text: str) -> str:
+def strip_ansi(text: str) -> str:
     """去除终端 ANSI 转义码"""
-    text = _ANSI_PATTERN.sub("", text)
-    text = _ANSI_OTHER.sub("", text)
+    text = _ANSI_CSI.sub("", text)
+    text = _ANSI_OSC.sub("", text)
     return text
 
 
@@ -60,21 +51,12 @@ def _strip_ansi(text: str) -> str:
 
 class SSHSession:
     """
-    SSH 长连接会话，支持流式交互。
+    SSH 长连接会话（paramiko invoke_shell 后端）。
 
-    使用 paramiko invoke_shell() 保持持久连接，
-    支持 Agent 多轮 Tool Calling 中的动态交互。
-
-    核心方法:
-    - connect():          建立 SSH 连接
-    - disconnect():       关闭连接，返回完整 Evidence
-    - send_command():     执行命令并等待 shell prompt
-    - send_line():        发送文本（不等待，用于交互式输入）
-    - read_until():       等待指定输出模式（正则匹配）
-    - read_available():   读取当前可用输出（非阻塞）
+    只负责底层 SSH 操作和交互记录。
+    Evidence 构建由外部 SSHSessionManager 负责。
     """
 
-    # Shell prompt 匹配模式
     SHELL_PROMPTS = [r"#\s*$", r"\$\s*$"]
 
     def __init__(
@@ -97,9 +79,9 @@ class SSHSession:
         self._client: Optional[paramiko.SSHClient] = None
         self._channel: Optional[paramiko.Channel] = None
         self._connected: bool = False
-        self._interaction_history: List[Dict[str, Any]] = []
+        self._history: List[Dict[str, Any]] = []
         self._all_output: str = ""
-        self._pending_output: str = ""  # send_command timeout 时的未消费输出
+        self._pending: str = ""  # send_command timeout 时保留给后续 read_until
         self._opened_at: Optional[datetime] = None
 
     # ------------------------------------------------------------------
@@ -108,7 +90,6 @@ class SSHSession:
 
     @property
     def is_alive(self) -> bool:
-        """检查会话是否仍然活跃"""
         if not self._connected or self._channel is None:
             return False
         if self._channel.closed:
@@ -121,19 +102,25 @@ class SSHSession:
 
     @property
     def interaction_count(self) -> int:
-        """已记录的交互步骤数量"""
-        return len(self._interaction_history)
+        return len(self._history)
+
+    @property
+    def history(self) -> List[Dict[str, Any]]:
+        """脱敏后的交互历史（密码在记录时已替换为 ****）"""
+        return list(self._history)
+
+    @property
+    def all_output_clean(self) -> str:
+        """ANSI 清理后的完整输出"""
+        return strip_ansi(self._all_output)
 
     # ------------------------------------------------------------------
-    # Connection management
+    # Connection
     # ------------------------------------------------------------------
 
     def connect(self) -> Dict[str, Any]:
         """
         建立 SSH 连接并打开 shell channel。
-
-        Returns:
-            dict with status, message, initial_output
 
         Raises:
             ConnectionError: 连接或认证失败
@@ -144,11 +131,9 @@ class SSHSession:
                 "message": f"会话已存在 ({self.host}:{self.port})",
             }
 
-        # 创建 SSH 客户端
         self._client = paramiko.SSHClient()
         self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        # BMC SSH 响应较慢，需要较长 banner 超时
         banner_timeout = max(self.connect_timeout * 2, 30)
 
         try:
@@ -163,25 +148,15 @@ class SSHSession:
                 allow_agent=False,
             )
         except paramiko.AuthenticationException as e:
-            raise ConnectionError(
-                f"SSH 认证失败 ({self.host}:{self.port}): {e}"
-            )
+            raise ConnectionError(f"SSH 认证失败 ({self.host}:{self.port}): {e}")
         except paramiko.SSHException as e:
-            raise ConnectionError(
-                f"SSH 连接异常 ({self.host}:{self.port}): {e}"
-            )
+            raise ConnectionError(f"SSH 连接异常 ({self.host}:{self.port}): {e}")
         except Exception as e:
-            raise ConnectionError(
-                f"SSH 连接失败 ({self.host}:{self.port}): {e}"
-            )
+            raise ConnectionError(f"SSH 连接失败 ({self.host}:{self.port}): {e}")
 
-        # 打开 shell channel
-        self._channel = self._client.invoke_shell(
-            term="xterm", width=200, height=50
-        )
+        self._channel = self._client.invoke_shell(term="xterm", width=200, height=50)
         self._channel.settimeout(2.0)
 
-        # 等待初始 shell prompt
         initial_output, matched = self._recv_until(
             self.SHELL_PROMPTS, timeout=self.connect_timeout
         )
@@ -190,47 +165,34 @@ class SSHSession:
         self._all_output = initial_output
         self._opened_at = datetime.now()
 
-        self._record_interaction(
-            action="connect",
-            input_data="",
-            output=initial_output,
-            matched=matched,
-        )
+        self._record("connect", "", initial_output, matched)
 
         if not matched:
             return {
                 "status": "connected_with_warning",
-                "message": (
-                    f"已连接到 {self.host}:{self.port}，"
-                    f"但未检测到标准 shell prompt"
-                ),
-                "initial_output": _strip_ansi(initial_output)[-500:],
+                "message": f"已连接到 {self.host}:{self.port}，但未检测到标准 shell prompt",
+                "initial_output": strip_ansi(initial_output)[-500:],
             }
 
         return {
             "status": "connected",
             "message": f"SSH 会话已建立 ({self.host}:{self.port})",
-            "initial_output": _strip_ansi(initial_output)[-500:],
+            "initial_output": strip_ansi(initial_output)[-500:],
         }
 
     def disconnect(self) -> Dict[str, Any]:
         """
-        关闭 SSH 会话，返回完整 Evidence。
-
-        安全关闭 channel 和 client，无论当前状态如何。
-        返回包含完整 interaction_history 的结果。
+        关闭 SSH 会话。
 
         Returns:
-            dict with status, interaction_history, evidence
+            dict with status, host, port, interaction_count, opened_at, closed_at
         """
-        # 关闭 channel
         if self._channel and not self._channel.closed:
             try:
                 self._channel.close()
             except Exception:
                 pass
 
-        # 关闭 client
         if self._client:
             try:
                 self._client.close()
@@ -238,18 +200,15 @@ class SSHSession:
                 pass
 
         self._connected = False
+        closed_at = datetime.now().isoformat()
 
         result = {
             "status": "disconnected",
             "host": self.host,
             "port": self.port,
-            "opened_at": (
-                self._opened_at.isoformat() if self._opened_at else None
-            ),
-            "closed_at": datetime.now().isoformat(),
-            "interaction_count": len(self._interaction_history),
-            "interaction_history": self._get_masked_history(),
-            "evidence": self._build_evidence(),
+            "opened_at": self._opened_at.isoformat() if self._opened_at else None,
+            "closed_at": closed_at,
+            "interaction_count": len(self._history),
         }
 
         self._channel = None
@@ -263,47 +222,26 @@ class SSHSession:
 
     def send_command(self, command: str, timeout: int = 30) -> Dict[str, Any]:
         """
-        在会话中执行命令，等待 shell prompt 返回。
+        执行命令并等待 shell prompt。
 
-        适用于非交互式命令（如 ipmcget -d userlist）。
-        发送命令后等待下一个 shell prompt，然后提取命令输出。
-
-        Args:
-            command: 要执行的命令
-            timeout: 等待完成的超时秒数
-
-        Returns:
-            dict with status, command, output, raw_output, matched_prompt
-
-        Raises:
-            RuntimeError: 会话未连接或已断开
+        如果命令进入交互模式（timeout），输出保留到 _pending 供后续 read_until 消费。
         """
         if not self.is_alive:
-            raise RuntimeError(
-                "SSH 会话未连接或已断开，请先调用 ssh_session_open"
-            )
+            raise RuntimeError("SSH 会话未连接或已断开")
 
         self._channel.send(command + "\n")
 
-        output, matched = self._recv_until(
-            self.SHELL_PROMPTS, timeout=timeout
-        )
+        output, matched = self._recv_until(self.SHELL_PROMPTS, timeout=timeout)
 
         self._all_output += output
 
         if not matched:
-            # 命令进入交互模式，输出保留给后续 read_until / expect
-            self._pending_output += output
+            self._pending += output
 
-        clean = _strip_ansi(output)
+        clean = strip_ansi(output)
         cmd_output = self._extract_command_output(clean, command)
 
-        self._record_interaction(
-            action="command",
-            input_data=command,
-            output=clean,
-            matched=matched,
-        )
+        self._record("command", command, clean, matched)
 
         return {
             "status": "completed" if matched else "timeout",
@@ -323,38 +261,15 @@ class SSHSession:
         is_password: bool = False,
         press_enter: bool = True,
     ) -> Dict[str, Any]:
-        """
-        向会话发送一行文本（不等待输出）。
-
-        适用于交互式命令中输入密码等信息。
-        发送后应紧跟 read_until() 来获取响应。
-
-        Args:
-            text: 要发送的文本
-            is_password: 是否为密码（日志中脱敏显示为 ****）
-            press_enter: 是否附加回车（默认 True）
-
-        Returns:
-            dict with status, sent_text, is_password
-
-        Raises:
-            RuntimeError: 会话未连接或已断开
-        """
+        """发送一行文本（不等待输出）。用于交互式输入。"""
         if not self.is_alive:
             raise RuntimeError("SSH 会话未连接或已断开")
 
         data = text + ("\n" if press_enter else "")
         self._channel.send(data)
 
-        self._record_interaction(
-            action="send",
-            input_data=text,
-            output="",
-            matched=True,
-            is_password=is_password,
-        )
+        self._record("send", text, "", True, is_password=is_password)
 
-        # 短暂等待，让远程进程处理
         time.sleep(0.1)
 
         return {
@@ -368,31 +283,15 @@ class SSHSession:
         patterns: List[str],
         timeout: float = 10,
     ) -> Dict[str, Any]:
-        """
-        读取输出直到匹配任一模式或超时。
-
-        用于交互式命令中等待提示符（如密码提示）。
-        在 ANSI 清理后的文本上进行正则匹配。
-
-        Args:
-            patterns: 正则表达式模式列表，如 [r"[Pp]assword"]
-            timeout: 超时秒数
-
-        Returns:
-            dict with status, output, matched, matched_pattern, timeout_seconds
-
-        Raises:
-            RuntimeError: 会话未连接或已断开
-        """
+        """读取输出直到匹配任一正则模式或超时。"""
         if not self.is_alive:
             raise RuntimeError("SSH 会话未连接或已断开")
 
         output, matched = self._recv_until(patterns, timeout=timeout)
 
         self._all_output += output
-        clean = _strip_ansi(output)
+        clean = strip_ansi(output)
 
-        # 确定哪个模式被匹配
         matched_pattern = None
         if matched:
             for p in patterns:
@@ -405,12 +304,7 @@ class SSHSession:
                         matched_pattern = p
                         break
 
-        self._record_interaction(
-            action="read_until",
-            input_data=patterns,
-            output=clean,
-            matched=matched,
-        )
+        self._record("read_until", patterns, clean, matched)
 
         return {
             "status": "matched" if matched else "timeout",
@@ -421,21 +315,7 @@ class SSHSession:
         }
 
     def read_available(self, timeout: float = 2.0) -> Dict[str, Any]:
-        """
-        读取当前可用的输出（非阻塞式，短超时）。
-
-        如果有数据可读，立即返回；
-        如果没有数据，最多等待 timeout 秒。
-
-        Args:
-            timeout: 最长等待秒数
-
-        Returns:
-            dict with status, output, has_data
-
-        Raises:
-            RuntimeError: 会话未连接或已断开
-        """
+        """读取当前可用输出（短超时，非阻塞式）。"""
         if not self.is_alive:
             raise RuntimeError("SSH 会话未连接或已断开")
 
@@ -445,53 +325,28 @@ class SSHSession:
         while time.monotonic() < deadline:
             if self._channel.recv_ready():
                 try:
-                    chunk = self._channel.recv(4096).decode(
-                        "utf-8", errors="replace"
-                    )
+                    chunk = self._channel.recv(4096).decode("utf-8", errors="replace")
                     accumulated += chunk
                 except Exception:
                     break
             else:
                 if accumulated:
-                    break  # 已有数据且无更多可读
+                    break
                 time.sleep(0.05)
 
         if accumulated:
             self._all_output += accumulated
 
-        clean = _strip_ansi(accumulated) if accumulated else ""
+        clean = strip_ansi(accumulated) if accumulated else ""
 
         if clean.strip():
-            self._record_interaction(
-                action="read", input_data="", output=clean, matched=True
-            )
+            self._record("read", "", clean, True)
 
         return {
             "status": "ok",
             "output": clean,
             "has_data": bool(clean.strip()),
         }
-
-    # ------------------------------------------------------------------
-    # Evidence & History
-    # ------------------------------------------------------------------
-
-    def get_interaction_history(self) -> List[Dict[str, Any]]:
-        """获取完整交互历史（密码已脱敏）"""
-        return list(self._interaction_history)
-
-    def build_evidence(self) -> Dict[str, Any]:
-        """
-        构建完整 Evidence 字典。
-
-        包含:
-        - evidence_type: "ssh_session_output"
-        - content: 完整原始输出
-        - metadata: 连接信息
-        - interaction_history: 所有交互步骤
-        - captured_at: 时间戳
-        """
-        return self._build_evidence()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -502,41 +357,30 @@ class SSHSession:
         patterns: List[str],
         timeout: float = 10,
     ) -> Tuple[str, bool]:
-        """
-        Low-level: 从 Channel 接收数据直到匹配任一模式或超时。
-
-        Returns:
-            (accumulated_text, matched: bool)
-        """
+        """底层: 从 Channel 接收数据直到匹配任一模式或超时。"""
         deadline = time.monotonic() + timeout
-        # 把上次 send_command timeout 未消费的输出拼接上来
-        accumulated = self._pending_output
-        self._pending_output = ""
+        accumulated = self._pending
+        self._pending = ""
 
         while time.monotonic() < deadline:
             if self._channel.recv_ready():
                 try:
-                    chunk = self._channel.recv(4096).decode(
-                        "utf-8", errors="replace"
-                    )
+                    chunk = self._channel.recv(4096).decode("utf-8", errors="replace")
                     accumulated += chunk
                 except Exception:
                     break
             else:
                 time.sleep(0.05)
 
-            # 在 ANSI 清理后的文本上匹配模式
-            clean = _strip_ansi(accumulated)
+            clean = strip_ansi(accumulated)
             for pattern in patterns:
                 try:
                     if re.search(pattern, clean, re.IGNORECASE | re.MULTILINE):
                         return accumulated, True
                 except re.error:
-                    # 非法正则，退化为子串匹配
                     if pattern.lower() in clean.lower():
                         return accumulated, True
 
-            # 检查 channel 是否已关闭
             if self._channel.closed:
                 break
             if getattr(self._channel, "eof_received", False):
@@ -546,18 +390,16 @@ class SSHSession:
 
     @staticmethod
     def _extract_command_output(full_output: str, command: str) -> str:
-        """从 shell 会话输出中提取命令执行结果（去除 echo 回显和 prompt）"""
+        """从 shell 会话输出中提取命令结果（去除 echo 回显和 prompt）"""
         lines = full_output.split("\n")
         result_lines = []
         found_command = False
 
         for line in lines:
             stripped = line.strip()
-            # 跳过命令 echo 行
             if not found_command and command.strip() in stripped:
                 found_command = True
                 continue
-            # 跳过末尾 prompt 行
             if found_command and re.match(r"^~\s*[~$/#]", stripped):
                 continue
             if found_command:
@@ -565,7 +407,7 @@ class SSHSession:
 
         return "\n".join(result_lines).strip()
 
-    def _record_interaction(
+    def _record(
         self,
         action: str,
         input_data: Any,
@@ -573,37 +415,12 @@ class SSHSession:
         matched: bool,
         is_password: bool = False,
     ) -> None:
-        """记录一次交互步骤到 interaction_history"""
-        self._interaction_history.append(
-            {
-                "timestamp": datetime.now().isoformat(),
-                "action": action,
-                "input": "****" if is_password else str(input_data),
-                "output": output[-500:] if output else "",
-                "matched": matched,
-                "is_password": is_password,
-            }
-        )
-
-    def _get_masked_history(self) -> List[Dict[str, Any]]:
-        """获取脱敏后的交互历史（密码在记录时已脱敏）"""
-        return list(self._interaction_history)
-
-    def _build_evidence(self) -> Dict[str, Any]:
-        """构建完整 Evidence 字典"""
-        return {
-            "evidence_type": "ssh_session_output",
-            "content": _strip_ansi(self._all_output),
-            "metadata": {
-                "host": self.host,
-                "port": self.port,
-                "user": self.user,
-                "opened_at": (
-                    self._opened_at.isoformat() if self._opened_at else None
-                ),
-                "closed_at": datetime.now().isoformat(),
-                "interaction_count": len(self._interaction_history),
-            },
-            "interaction_history": self._get_masked_history(),
-            "captured_at": datetime.now().isoformat(),
-        }
+        """记录一次交互步骤"""
+        self._history.append({
+            "timestamp": datetime.now().isoformat(),
+            "action": action,
+            "input": "****" if is_password else str(input_data),
+            "output": output[-500:] if output else "",
+            "matched": matched,
+            "is_password": is_password,
+        })

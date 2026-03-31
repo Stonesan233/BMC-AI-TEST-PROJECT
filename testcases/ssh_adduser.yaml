@@ -26,13 +26,17 @@
     command: "ipmcset -d adduser -v testuser001"
     interactions:
       - expect: "[Pp]assword"
-        send: "Test@123456"
+        send: "Admin@90000"
         is_password: true
-        description: "等待密码提示后输入新用户密码"
+        description: "输入当前用户密码（身份验证）"
       - expect: "[Pp]assword"
         send: "Test@123456"
         is_password: true
-        description: "二次确认密码"
+        description: "输入新用户密码"
+      - expect: "[Pp]assword"
+        send: "Test@123456"
+        is_password: true
+        description: "二次确认新用户密码"
     expected:
       exit_code: 0
       success: true
