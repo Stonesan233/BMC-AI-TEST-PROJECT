@@ -982,13 +982,22 @@ class ExecAgent:
 
         if not handler:
             return json.dumps(
-                {"error": f"未知 action: {action}，支持: open/exec/expect/send/read/close"},
+                {
+                    "error": (
+                        f"未知 action: '{action}'，"
+                        f"支持: open / exec / expect / send / read / close"
+                    )
+                },
                 ensure_ascii=False,
             )
         return await handler(args)
 
     def _require_session(self):
-        """获取活跃的 SSH Session，不存在或已断开则返回 None。"""
+        """
+        获取活跃的 SSH Session。
+
+        Manager.get() 会自动清理死会话。
+        """
         return self._session_mgr.get()
 
     async def _ssh_action_open(self, args: dict) -> str:
@@ -998,11 +1007,28 @@ class ExecAgent:
                 asyncio.to_thread(self._session_mgr.open),
                 timeout=30,
             )
-            logger.info(f"[SSH Session] 已打开 {self.ssh_host}:{self.ssh_port}")
+            logger.info(
+                f"[SSH Session] 已打开 {self.ssh_host}:{self.ssh_port}"
+            )
             return json.dumps(result, ensure_ascii=False, indent=2)
+        except asyncio.TimeoutError:
+            return json.dumps(
+                {
+                    "error": (
+                        f"SSH 连接超时 (30s): {self.ssh_host}:{self.ssh_port}，"
+                        f"请检查网络连通性和 BMC SSH 服务状态"
+                    )
+                },
+                ensure_ascii=False,
+            )
         except Exception as e:
             return json.dumps(
-                {"error": f"SSH 会话打开失败: {e}"},
+                {
+                    "error": (
+                        f"SSH 会话打开失败: {e}。"
+                        f"请检查 {self.ssh_host}:{self.ssh_port} 是否可达"
+                    )
+                },
                 ensure_ascii=False,
             )
 
@@ -1011,7 +1037,12 @@ class ExecAgent:
         session = self._require_session()
         if not session:
             return json.dumps(
-                {"error": "SSH 会话未打开或已断开，请先调用 ssh_session(action=\"open\")"},
+                {
+                    "error": (
+                        "SSH 会话未打开或已断开，"
+                        "请先调用 ssh_session(action=\"open\")"
+                    )
+                },
                 ensure_ascii=False,
             )
 
@@ -1019,7 +1050,10 @@ class ExecAgent:
         timeout = args.get("timeout", 30)
 
         if not command.strip():
-            return json.dumps({"error": "命令不能为空"}, ensure_ascii=False)
+            return json.dumps(
+                {"error": "command 不能为空"},
+                ensure_ascii=False,
+            )
 
         logger.info(f"[SSH Session] exec: {command[:80]}")
 
@@ -1031,18 +1065,43 @@ class ExecAgent:
             return json.dumps(result, ensure_ascii=False, indent=2)
         except asyncio.TimeoutError:
             return json.dumps(
-                {"error": f"命令执行超时 ({timeout}s): {command}"},
+                {
+                    "status": "timeout",
+                    "error": (
+                        f"命令执行超时 ({timeout}s): {command}。"
+                        f"命令可能进入了交互模式，请使用 send+expect 模式"
+                    ),
+                },
                 ensure_ascii=False,
             )
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            error_msg = str(e)
+            if "通道已关闭" in error_msg or "已断开" in error_msg:
+                return json.dumps(
+                    {
+                        "error": (
+                            f"SSH 通道已断开: {error_msg}。"
+                            f"请重新 ssh_session(action=\"open\")"
+                        )
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {"error": error_msg},
+                ensure_ascii=False,
+            )
 
     async def _ssh_action_expect(self, args: dict) -> str:
         """等待 SSH 会话中出现指定输出模式。"""
         session = self._require_session()
         if not session:
             return json.dumps(
-                {"error": "SSH 会话未打开或已断开"},
+                {
+                    "error": (
+                        "SSH 会话未打开或已断开，"
+                        "请先调用 ssh_session(action=\"open\")"
+                    )
+                },
                 ensure_ascii=False,
             )
 
@@ -1050,9 +1109,14 @@ class ExecAgent:
         timeout = args.get("timeout", 10)
 
         if not patterns:
-            return json.dumps({"error": "patterns 不能为空"}, ensure_ascii=False)
+            return json.dumps(
+                {"error": "patterns 不能为空"},
+                ensure_ascii=False,
+            )
 
-        logger.info(f"[SSH Session] expect: {patterns} (timeout={timeout}s)")
+        logger.info(
+            f"[SSH Session] expect: {patterns} (timeout={timeout}s)"
+        )
 
         try:
             result = await asyncio.wait_for(
@@ -1062,23 +1126,51 @@ class ExecAgent:
             output_preview = result.get("output", "")[-200:]
             logger.info(
                 f"[SSH Session] expect result: "
-                f"matched={result.get('matched')}, output={output_preview}"
+                f"matched={result.get('matched')}, "
+                f"pattern={result.get('matched_pattern')}, "
+                f"output={output_preview}"
             )
             return json.dumps(result, ensure_ascii=False, indent=2)
         except asyncio.TimeoutError:
             return json.dumps(
-                {"error": f"等待模式超时 ({timeout}s)", "patterns": patterns},
+                {
+                    "status": "timeout",
+                    "error": (
+                        f"等待模式超时 ({timeout}s)，"
+                        f"patterns: {patterns}。"
+                        f"可以使用 read action 查看当前输出"
+                    ),
+                },
                 ensure_ascii=False,
             )
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            error_msg = str(e)
+            if "通道已关闭" in error_msg or "已断开" in error_msg:
+                return json.dumps(
+                    {
+                        "error": (
+                            f"SSH 通道已断开: {error_msg}。"
+                            f"请重新 ssh_session(action=\"open\")"
+                        )
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {"error": error_msg},
+                ensure_ascii=False,
+            )
 
     async def _ssh_action_send(self, args: dict) -> str:
-        """向 SSH 会话发送文本。"""
+        """向 SSH 会话发送文本（用于交互式输入）。"""
         session = self._require_session()
         if not session:
             return json.dumps(
-                {"error": "SSH 会话未打开或已断开"},
+                {
+                    "error": (
+                        "SSH 会话未打开或已断开，"
+                        "请先调用 ssh_session(action=\"open\")"
+                    )
+                },
                 ensure_ascii=False,
             )
 
@@ -1087,9 +1179,12 @@ class ExecAgent:
         press_enter = args.get("press_enter", True)
 
         if not text:
-            return json.dumps({"error": "text 不能为空"}, ensure_ascii=False)
+            return json.dumps(
+                {"error": "text 不能为空"},
+                ensure_ascii=False,
+            )
 
-        log_text = "****" if is_password else text[:20]
+        log_text = "****" if is_password else text[:30]
         logger.info(f"[SSH Session] send: {log_text}")
 
         try:
@@ -1098,36 +1193,75 @@ class ExecAgent:
             )
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            error_msg = str(e)
+            if "通道已关闭" in error_msg or "已断开" in error_msg:
+                return json.dumps(
+                    {
+                        "error": (
+                            f"发送失败，SSH 通道已断开: {error_msg}。"
+                            f"请重新 ssh_session(action=\"open\")"
+                        )
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {"error": error_msg},
+                ensure_ascii=False,
+            )
 
     async def _ssh_action_read(self, args: dict) -> str:
         """读取 SSH 会话当前可用输出。"""
         session = self._require_session()
         if not session:
             return json.dumps(
-                {"error": "SSH 会话未打开或已断开"},
+                {
+                    "error": (
+                        "SSH 会话未打开或已断开，"
+                        "请先调用 ssh_session(action=\"open\")"
+                    )
+                },
                 ensure_ascii=False,
             )
 
         timeout = args.get("timeout", 2)
 
         try:
-            result = await asyncio.to_thread(session.read_available, timeout)
+            result = await asyncio.to_thread(
+                session.read_available, timeout
+            )
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            error_msg = str(e)
+            if "通道已关闭" in error_msg or "已断开" in error_msg:
+                return json.dumps(
+                    {
+                        "error": (
+                            f"SSH 通道已断开: {error_msg}。"
+                            f"请重新 ssh_session(action=\"open\")"
+                        )
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {"error": error_msg},
+                ensure_ascii=False,
+            )
 
     async def _ssh_action_close(self, args: dict) -> str:
         """关闭 SSH 会话并获取完整 Evidence。"""
         session = self._session_mgr.get()
         if not session:
             return json.dumps(
-                {"status": "no_session", "message": "没有打开的 SSH 会话"},
+                {
+                    "status": "no_session",
+                    "message": "没有打开的 SSH 会话",
+                },
                 ensure_ascii=False,
             )
 
         logger.info(
-            f"[SSH Session] 关闭会话 (interactions={session.interaction_count})"
+            f"[SSH Session] 关闭会话 "
+            f"(interactions={session.interaction_count})"
         )
 
         try:
@@ -1135,7 +1269,12 @@ class ExecAgent:
             return json.dumps(result, ensure_ascii=False, indent=2)
         except Exception as e:
             return json.dumps(
-                {"error": f"关闭会话异常: {e}"},
+                {
+                    "error": (
+                        f"关闭会话异常: {e}。"
+                        f"尝试 ssh_session(action=\"close\") 或忽略此错误"
+                    )
+                },
                 ensure_ascii=False,
             )
 
