@@ -35,6 +35,8 @@ shared/execution_records/
 shared/test_results/
 shared/evidence/
 shared/reports/
+shared/rag_index/
+shared/rag_eval_report.json
 
 # Logs
 *.log
