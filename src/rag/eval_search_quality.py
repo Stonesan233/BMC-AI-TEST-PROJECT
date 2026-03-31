@@ -1,26 +1,43 @@
 # -*- coding: utf-8 -*-
 """
-RAG 检索质量评估脚本
+RAG 检索质量评估脚本 (v2 -- Hybrid Search)
 
-从 Chroma 向量数据库中提取所有 IPMI 命令的元数据,
-构造多维度查询用例，自动评估检索准确率。
+对比 4 种检索模式:
+  - vector:     纯向量 (alpha=1.0)
+  - hybrid_a07: 混合 70/30 (alpha=0.7)
+  - hybrid_a05: 混合 50/50 (alpha=0.5)
+  - keyword:    纯 BM25 (alpha=0.0)
 
-依赖: chromadb, openai, python-dotenv, tqdm
+评估维度:
+  - exact_en:   英文精确命令名
+  - exact_cn:   中文精确命令名
+  - fuzzy:      模糊功能描述
+  - netfn_cmd:  NetFn+CMD 查询
+  - scenario:   场景化查询
+
+用法:
+  python -m src.rag.eval_search_quality --output ./shared/rag_eval_report_v2.json
+
+依赖: chromadb, openai, python-dotenv, tqdm, httpx, jieba
 """
 
 import asyncio
 import json
+import logging
 import os
 import sys
-import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+import httpx
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
-import chromadb
 from tqdm import tqdm
+
+from src.rag.retriever import HybridRetriever
+
+logger = logging.getLogger("rag.eval")
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -34,15 +51,45 @@ EMBEDDING_DIM = 1024
 
 
 # ---------------------------------------------------------------------------
-# 嵌入查询
+# Embedding (带重试 + 回退)
 # ---------------------------------------------------------------------------
+async def _embed_single(
+    client: AsyncOpenAI,
+    text: str,
+    max_retries: int = 3,
+) -> Optional[List[float]]:
+    """嵌入单条文本, 带指数退避重试."""
+    for attempt in range(max_retries):
+        try:
+            resp = await client.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=[text],
+                dimensions=EMBEDDING_DIM,
+            )
+            return resp.data[0].embedding
+        except Exception as e:
+            if attempt < max_retries - 1:
+                delay = 2 ** attempt
+                logger.warning(f"Embedding 重试 {attempt + 1}/{max_retries} ({delay}s): {e}")
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"Embedding 失败: {text[:50]}... ({e})")
+                return None
+
+
 async def embed_queries(
     client: AsyncOpenAI,
     queries: List[str],
-    batch_size: int = 10,
+    batch_size: int = 8,
 ) -> Dict[str, List[float]]:
-    """批量嵌入查询文本"""
-    result: Dict[str, List[float]] = {}
+    """
+    批量嵌入查询, 失败时逐条重试.
+
+    batch_size 降到 8 避免超时.
+    """
+    result: Dict[str, Optional[List[float]]] = {}
+
+    # 批量嵌入
     for i in range(0, len(queries), batch_size):
         batch = queries[i : i + batch_size]
         try:
@@ -54,67 +101,69 @@ async def embed_queries(
             for j in range(len(batch)):
                 result[queries[i + j]] = resp.data[j].embedding
         except Exception as e:
-            print(f"[WARN] Embedding batch {i // batch_size} failed: {e}")
+            logger.warning(f"Batch {i // batch_size} 失败: {e}, 逐条重试")
             for q in batch:
-                try:
-                    resp = await client.embeddings.create(
-                        model=EMBEDDING_MODEL,
-                        input=[q],
-                        dimensions=EMBEDDING_DIM,
-                    )
-                    result[q] = resp.data[0].embedding
-                except Exception:
-                    result[q] = None
-    return result
+                if q not in result:
+                    result[q] = await _embed_single(client, q)
+
+    # 二次重试失败项
+    failed = [q for q in queries if result.get(q) is None]
+    if failed:
+        logger.info(f"二次重试 {len(failed)} 条失败 embedding...")
+        for q in failed:
+            result[q] = await _embed_single(client, q)
+
+    ok = {q: emb for q, emb in result.items() if emb is not None}
+    logger.info(f"Embedding 完成: {len(ok)}/{len(queries)}")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# 相关性判断
+# ---------------------------------------------------------------------------
+def _is_relevant(expected_keywords: List[str], metadata: Dict) -> bool:
+    """
+    基于预期关键词判断检索结果是否相关.
+
+    检查 section, description, chinese_name, english_name, full_command,
+    netfn, cmd 等字段.
+    """
+    fields = [
+        metadata.get("section", ""),
+        metadata.get("description", ""),
+        metadata.get("chinese_name", ""),
+        metadata.get("english_name", ""),
+        metadata.get("full_command", ""),
+        metadata.get("netfn", ""),
+        metadata.get("cmd", ""),
+    ]
+    all_text = " ".join(f.lower() for f in fields if f)
+
+    matched = sum(1 for kw in expected_keywords if kw.lower() in all_text)
+    return matched >= max(len(expected_keywords) * 0.5, 1)
 
 
 # ---------------------------------------------------------------------------
 # 评估指标
 # ---------------------------------------------------------------------------
 def precision_at_k(results: List[Dict], k: int) -> float:
-    """计算 Precision@K: top-K 中至少有一个相关结果的比例"""
-    hits = 0
-    for r in results:
-        metas = r["metadatas"][0]
-        top_k = metas[:k]
-        if any(_is_relevant(r["query"], m) for m in top_k):
-            hits += 1
+    """P@K: top-K 中至少有一个相关结果的比例."""
+    hits = sum(
+        1 for r in results
+        if any(_is_relevant(r["expected_keywords"], m) for m in r["top_metas"][:k])
+    )
     return hits / len(results) if results else 0.0
 
 
 def mrr_at_k(results: List[Dict], k: int) -> float:
-    """计算 MRR@K (Mean Reciprocal Rank)"""
-    total_reciprocal_rank = 0.0
+    """MRR@K: Mean Reciprocal Rank."""
+    total = 0.0
     for r in results:
-        metas = r["metadatas"][0]
-        for rank in range(1, min(k, len(metas)) + 1):
-            if _is_relevant(r["query"], metas[rank - 1]):
-                total_reciprocal_rank += 1.0 / rank
+        for rank in range(1, min(k, len(r["top_metas"])) + 1):
+            if _is_relevant(r["expected_keywords"], r["top_metas"][rank - 1]):
+                total += 1.0 / rank
                 break
-    return total_reciprocal_rank / len(results) if results else 0.0
-
-
-def _is_relevant(query: str, metadata: Dict) -> bool:
-    """判断检索结果是否与查询相关"""
-    q = query.lower()
-    section = metadata.get("section", "").lower()
-    description = metadata.get("description", "").lower()
-    all_text = f"{section} {description}"
-
-    keywords = query.lower().split()
-    matched = sum(1 for kw in keywords if kw in all_text)
-    return matched >= len(keywords) * 0.5
-
-
-def mean_recall_at_k(results: List[Dict], k: int) -> float:
-    """计算 Mean Recall@K: top-K 中相关结果占所有相关结果的比例"""
-    total_recall = 0.0
-    for r in results:
-        metas = r["metadatas"][0]
-        top_k = metas[:k]
-        relevant_count = sum(1 for m in top_k if _is_relevant(r["query"], m))
-        total_recall += relevant_count / k
-    return total_recall / len(results) if results else 0.0
+    return total / len(results) if results else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -127,137 +176,154 @@ async def run_evaluation(output_file: str) -> None:
         print("[ERROR] DASHSCOPE_API_KEY not set")
         return
 
-    # 连接 Chroma
-    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-    collection = chroma_client.get_collection(COLLECTION_NAME)
-    total_chunks = collection.count()
-    print(f"[OK] Collection: {COLLECTION_NAME}, {total_chunks} chunks")
+    # 初始化 HybridRetriever
+    retriever = HybridRetriever(
+        chroma_path=CHROMA_PATH,
+        collection_name=COLLECTION_NAME,
+    )
 
-    # 提取所有 metadata
-    all_metas = []
-    all_docs = []
-    batch = 100
-    offset = 0
-    while offset < total_chunks:
-        result = collection.get(include=["metadatas", "documents"], limit=batch, offset=offset)
-        all_metas.extend(result["metadatas"])
-        all_docs.extend(result["documents"])
-        offset += batch
-    print(f"[OK] Loaded {len(all_metas)} metadata entries")
+    # 初始化 Embedding 客户端 (120s 超时, 匹配 build_index.py)
+    http_client = httpx.AsyncClient(timeout=120.0)
+    openai_client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=DASHSCOPE_BASE_URL,
+        http_client=http_client,
+    )
 
-    # 构造查询用例
+    # 构造测试查询
     test_queries = _build_test_queries()
-    print(f"[OK] Built {len(test_queries)} test queries")
+    print(f"[OK] {len(test_queries)} test queries")
 
     # 嵌入查询
-    openai_client = AsyncOpenAI(api_key=api_key, base_url=DASHSCOPE_BASE_URL)
     print("[INFO] Embedding queries...")
     query_texts = [q["query"] for q in test_queries]
     query_embeddings = await embed_queries(openai_client, query_texts)
+    print(f"[OK] {len(query_embeddings)}/{len(query_texts)} queries embedded")
 
-    # 执行检索
-    print("[INFO] Running searches...")
-    all_results = []
+    # ------------------------------------------------------------------
+    # 多模式检索
+    # ------------------------------------------------------------------
+    modes = {
+        "vector":     1.0,   # 纯向量
+        "hybrid_a07": 0.7,   # 混合 70/30
+        "hybrid_a05": 0.5,   # 混合 50/50
+        "keyword":    0.0,   # 纯 BM25
+    }
+
+    all_mode_results: Dict[str, List[Dict]] = {m: [] for m in modes}
+
     for tq in tqdm(test_queries, desc="Searching"):
         q = tq["query"]
         emb = query_embeddings.get(q)
-        if emb is None:
-            continue
-        results = collection.query(
-            query_embeddings=[emb],
-            n_results=5,
-            where={"chunk_type": "command"},
-        )
-        results["query"] = q
-        results["category"] = tq["category"]
-        results["expected_keywords"] = tq["expected_keywords"]
-        all_results.append(results)
+        eks = tq["expected_keywords"]
 
+        for mode_name, alpha in modes.items():
+            results = retriever.search(
+                query=q,
+                query_embedding=emb,
+                top_k=5,
+                alpha=alpha,
+                chunk_type="command",
+            )
+            top_metas = [r["metadata"] for r in results]
+            all_mode_results[mode_name].append({
+                "query": q,
+                "category": tq["category"],
+                "expected_keywords": eks,
+                "top_metas": top_metas,
+                "top_sections": [
+                    m.get("section", "")[:80] for m in top_metas[:3]
+                ],
+            })
+
+    # ------------------------------------------------------------------
     # 计算指标
-    print("\n[INFO] Computing metrics...")
-    p1 = precision_at_k(all_results, 1)
-    p3 = precision_at_k(all_results, 3)
-    mrr1 = mrr_at_k(all_results, 1)
-    mrr3 = mrr_at_k(all_results, 3)
-    recall1 = mean_recall_at_k(all_results, 1)
-    recall3 = mean_recall_at_k(all_results, 3)
+    # ------------------------------------------------------------------
+    print(f"\n{'=' * 70}")
+    print("RAG RETRIEVAL QUALITY EVALUATION (Hybrid Search)")
+    print(f"{'=' * 70}")
+    print(f"  Total queries: {len(test_queries)}")
+    print(f"  Embedded:      {len(query_embeddings)}")
 
-    # 按类别统计
-    by_category: Dict[str, List] = defaultdict(list)
-    for r in all_results:
-        by_category[r["category"]].append(r)
+    report_modes: Dict[str, Any] = {}
 
-    report: Dict[str, Any] = {}
-    for cat in sorted(by_category.keys()):
-        cat_results = by_category[cat]
-        report[cat] = {
-            "count": len(cat_results),
-            "P@1": round(precision_at_k(cat_results, 1), 4),
-            "P@3": round(precision_at_k(cat_results, 3), 4),
-            "MRR@1": round(mrr_at_k(cat_results, 1), 4),
-            "MRR@3": round(mrr_at_k(cat_results, 3), 4),
-        }
+    for mode_name in modes:
+        results = all_mode_results[mode_name]
 
-    # 输出结果
-    print(f"\n{'=' * 60}")
-    print("RAG RETRIEVAL QUALITY EVALUATION REPORT")
-    print(f"{'=' * 60}")
-    print(f"  Total chunks in DB:  {total_chunks}")
-    print(f"  Total queries:    {len(all_results)}")
-    print(f"  P@1:              {p1:.1%}")
-    print(f"  P@3:              {p3:.1%}")
-    print(f"  MRR@1:             {mrr1:.4f}")
-    print(f"  MRR@3:             {mrr3:.4f}")
-    print(f"  Recall@1:          {recall1:.2f}")
-    print(f"  Recall@3:          {recall3:.2f}")
-    print(f"\n  By Category:")
-    for cat in sorted(report.keys()):
-        r = report[cat]
-        print(f"    {cat:20s}  n={r['count']:2d}  P@1={r['P@1']:.1%}  P@3={r['P@3']:.1%}  MRR@1={r['MRR@1']:.4f}")
+        p1 = precision_at_k(results, 1)
+        p3 = precision_at_k(results, 3)
+        m1 = mrr_at_k(results, 1)
+        m3 = mrr_at_k(results, 3)
 
-    print(f"\n  Top-3 Examples:")
-    for r in all_results[:5]:
-        print(f"    [{r['category']:20s}] Q=\"{r['query']}\"")
-        for i in range(min(3, len(r["metadatas"][0]))):
-            m = r["metadatas"][0][i]
-            d = r["distances"][0][i]
-            print(f"      {i+1}. {m.get('section', '')[:60]}  dist={d:.4f}")
+        # 按类别统计
+        by_cat: Dict[str, List] = defaultdict(list)
+        for r in results:
+            by_cat[r["category"]].append(r)
 
-    # 保存 JSON 报告
-    if output_file:
-        output_data = {
-            "total_chunks": total_chunks,
-            "total_queries": len(all_results),
+        cat_report: Dict[str, Any] = {}
+        for cat in sorted(by_cat.keys()):
+            cr = by_cat[cat]
+            cat_report[cat] = {
+                "count": len(cr),
+                "P@1": round(precision_at_k(cr, 1), 4),
+                "P@3": round(precision_at_k(cr, 3), 4),
+                "MRR@1": round(mrr_at_k(cr, 1), 4),
+                "MRR@3": round(mrr_at_k(cr, 3), 4),
+            }
+
+        report_modes[mode_name] = {
+            "total": len(results),
             "P@1": round(p1, 4),
             "P@3": round(p3, 4),
-            "MRR@1": round(mrr1, 4),
-            "MRR@3": round(mrr3, 4),
-            "Recall@1": round(recall1, 4),
-            "Recall@3": round(recall3, 4),
-            "by_category": report,
-            "detailed_results": [
+            "MRR@1": round(m1, 4),
+            "MRR@3": round(m3, 4),
+            "by_category": cat_report,
+        }
+
+        print(f"\n  [{mode_name:15s}] P@1={p1:.1%}  P@3={p3:.1%}  "
+              f"MRR@1={m1:.4f}  MRR@3={m3:.4f}")
+        for cat in sorted(cat_report.keys()):
+            cr = cat_report[cat]
+            print(f"    {cat:20s}  n={cr['count']:2d}  "
+                  f"P@1={cr['P@1']:.1%}  P@3={cr['P@3']:.1%}  "
+                  f"MRR@1={cr['MRR@1']:.4f}")
+
+    # Top-3 示例 (hybrid_a07)
+    print(f"\n  Top-3 Examples (hybrid_a07):")
+    for r in all_mode_results["hybrid_a07"][:8]:
+        print(f"    [{r['category']:20s}] Q=\"{r['query']}\"")
+        for i, sec in enumerate(r["top_sections"]):
+            print(f"      {i + 1}. {sec}")
+
+    # ------------------------------------------------------------------
+    # 保存报告
+    # ------------------------------------------------------------------
+    if output_file:
+        output_data = {
+            "modes": report_modes,
+            "test_queries": [
                 {
-                    "query": r["query"],
-                    "category": r["category"],
-                    "top1_section": r["metadatas"][0][0].get("section", "")[:100],
-                    "top1_distance": r["distances"][0][0],
+                    "query": q["query"],
+                    "category": q["category"],
+                    "expected_keywords": q["expected_keywords"],
                 }
-                for r in all_results
+                for q in test_queries
             ],
         }
         Path(output_file).parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
-        print(f"\n[OK] Report saved to: {output_file}")
+        print(f"\n[OK] Report saved: {output_file}")
 
     await openai_client.close()
+    await http_client.aclose()
 
 
 # ---------------------------------------------------------------------------
 # 构造查询用例
 # ---------------------------------------------------------------------------
 def _build_test_queries() -> List[Dict]:
-    """构造多维度测试查询"""
+    """构造多维度测试查询 (5 类 40 条)."""
     queries = []
 
     # Category 1: 精确命令名 (英文)
@@ -270,35 +336,35 @@ def _build_test_queries() -> List[Dict]:
         {"query": "Get BMC Info", "expected_keywords": ["bmc"], "category": "exact_en"},
         {"query": "Set BIOS Version", "expected_keywords": ["bios"], "category": "exact_en"},
         {"query": "Get Rack Info", "expected_keywords": ["rack"], "category": "exact_en"},
-        {"query": "Get Power Reading", "expected_keywords": ["power"], "category": "exact_en"},
+        {"query": "Get Power Reading", "expected_keywords": ["power", "reading"], "category": "exact_en"},
     ]
     queries.extend(exact_en)
 
     # Category 2: 精确命令名 (中文)
     exact_cn = [
         {"query": "机箱控制", "expected_keywords": ["机箱", "控制"], "category": "exact_cn"},
-        {"query": "获取设备ID", "expected_keywords": ["设备"], "category": "exact_cn"},
-        {"query": "获取SEL时间", "expected_keywords": ["sel"], "category": "exact_cn"},
+        {"query": "获取设备ID", "expected_keywords": ["设备", "id"], "category": "exact_cn"},
+        {"query": "获取SEL时间", "expected_keywords": ["sel", "时间"], "category": "exact_cn"},
         {"query": "查询黑名单", "expected_keywords": ["黑名单"], "category": "exact_cn"},
         {"query": "获取BMC信息", "expected_keywords": ["bmc"], "category": "exact_cn"},
-        {"query": "设置BIOS版本", "expected_keywords": ["bios"], "category": "exact_cn"},
-        {"query": "获取机柜信息", "expected_keywords": ["机柜"], "category": "exact_cn"},
+        {"query": "设置BIOS版本", "expected_keywords": ["bios", "版本"], "category": "exact_cn"},
+        {"query": "获取机柜信息", "expected_keywords": ["机柜", "机柜信息"], "category": "exact_cn"},
         {"query": "获取电源功率", "expected_keywords": ["电源", "功率"], "category": "exact_cn"},
     ]
     queries.extend(exact_cn)
 
     # Category 3: 模糊功能描述
     fuzzy = [
-        {"query": "怎么查看CPU温度", "expected_keywords": ["cpu", "温度"], "category": "fuzzy"},
-        {"query": "如何控制服务器上下电", "expected_keywords": ["电源", "控制"], "category": "fuzzy"},
-        {"query": "配置告警通知", "expected_keywords": ["告警"], "category": "fuzzy"},
+        {"query": "怎么查看CPU温度", "expected_keywords": ["cpu"], "category": "fuzzy"},
+        {"query": "如何控制服务器上下电", "expected_keywords": ["电源", "控制", "chassis"], "category": "fuzzy"},
+        {"query": "配置告警通知", "expected_keywords": ["告警", "alert"], "category": "fuzzy"},
         {"query": "查看系统日志", "expected_keywords": ["日志", "sel"], "category": "fuzzy"},
-        {"query": "管理用户账号", "expected_keywords": ["用户"], "category": "fuzzy"},
-        {"query": "配置网络IP地址", "expected_keywords": ["网络", "ip"], "category": "fuzzy"},
-        {"query": "风扇调速策略", "expected_keywords": ["风扇", "调速"], "category": "fuzzy"},
-        {"query": "查看传感器状态", "expected_keywords": ["传感器"], "category": "fuzzy"},
-        {"query": "固件升级", "expected_keywords": ["固件", "升级"], "category": "fuzzy"},
-        {"query": "BMC重启", "expected_keywords": ["bmc", "重启"], "category": "fuzzy"},
+        {"query": "管理用户账号", "expected_keywords": ["用户", "user"], "category": "fuzzy"},
+        {"query": "配置网络IP地址", "expected_keywords": ["网络", "ip", "lan"], "category": "fuzzy"},
+        {"query": "风扇调速策略", "expected_keywords": ["风扇", "fan"], "category": "fuzzy"},
+        {"query": "查看传感器状态", "expected_keywords": ["传感器", "sensor"], "category": "fuzzy"},
+        {"query": "固件升级", "expected_keywords": ["固件", "firmware"], "category": "fuzzy"},
+        {"query": "BMC重启", "expected_keywords": ["bmc", "重启", "reset"], "category": "fuzzy"},
     ]
     queries.extend(fuzzy)
 
@@ -314,9 +380,9 @@ def _build_test_queries() -> List[Dict]:
 
     # Category 5: 场景化查询
     scenario = [
-        {"query": "添加一个新的IPMI用户", "expected_keywords": ["用户", "添加"], "category": "scenario"},
-        {"query": "查看所有传感器读数", "expected_keywords": ["传感器"], "category": "scenario"},
-        {"query": "远程开关机", "expected_keywords": ["电源", "开机", "关机"], "category": "scenario"},
+        {"query": "添加一个新的IPMI用户", "expected_keywords": ["用户", "user", "add"], "category": "scenario"},
+        {"query": "查看所有传感器读数", "expected_keywords": ["传感器", "sensor"], "category": "scenario"},
+        {"query": "远程开关机", "expected_keywords": ["电源", "power", "chassis"], "category": "scenario"},
         {"query": "设置SNMP告警上报", "expected_keywords": ["snmp", "告警"], "category": "scenario"},
         {"query": "读取电子标签信息", "expected_keywords": ["电子标签"], "category": "scenario"},
         {"query": "配置VNC远程控制", "expected_keywords": ["vnc"], "category": "scenario"},
@@ -336,8 +402,10 @@ def main():
     import logging
 
     parser = argparse.ArgumentParser(description="RAG retrieval quality evaluation")
-    parser.add_argument("--output", type=str, default="./shared/rag_eval_report.json",
-                        help="Output report file path")
+    parser.add_argument(
+        "--output", type=str, default="./shared/rag_eval_report_v2.json",
+        help="Output report file path",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
