@@ -32,6 +32,7 @@ from pydantic import ValidationError
 from src.core.schemas import ExecutionRecord, StepRecord, StepStatus
 from src.tools.ipmi_tool import IPMITool
 from src.tools.ssh_tool import SSHTool
+from src.tools.ssh_session import SSHSession
 from src.utils.file_handler import save_execution_record
 
 # ======================================================================
@@ -335,6 +336,147 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    # ------------------------------------------------------------------
+    # SSH Session 工具（长连接 + 流式交互）
+    # ------------------------------------------------------------------
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_session_open",
+            "description": (
+                "打开 SSH 长连接会话。用于需要多步交互的场景（如 ipmcset adduser）。"
+                "会话在调用 ssh_session_close 前一直保持连接。"
+                "连接参数（host/port/user/password）由框架自动填充，无需指定。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_session_exec",
+            "description": (
+                "在已打开的 SSH 会话中执行命令并等待结果。"
+                "适用于查询类命令（如 ipmcget -d userlist）。"
+                "对于交互式命令（如 ipmcset adduser），请使用 ssh_session_send + ssh_session_expect 组合。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "要执行的命令",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "等待超时秒数，默认 30",
+                        "default": 30,
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_session_expect",
+            "description": (
+                "等待 SSH 会话中出现指定的输出模式。"
+                "用于交互式命令中等待提示符（如密码提示 Password:）。"
+                "返回匹配到的输出内容，Agent 可据此判断下一步操作。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "patterns": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "等待的输出模式列表（正则表达式），"
+                            '如 ["[Pp]assword"] 等待密码提示'
+                        ),
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "等待超时秒数，默认 10",
+                        "default": 10,
+                    },
+                },
+                "required": ["patterns"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_session_send",
+            "description": (
+                "向 SSH 会话发送文本。"
+                "用于交互式命令中输入密码等信息。"
+                "发送后需调用 ssh_session_expect 或 ssh_session_read 获取响应。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "要发送的文本内容",
+                    },
+                    "is_password": {
+                        "type": "boolean",
+                        "description": "是否为密码（日志中脱敏显示为 ****）",
+                        "default": False,
+                    },
+                    "press_enter": {
+                        "type": "boolean",
+                        "description": "发送后是否附加回车，默认 true",
+                        "default": True,
+                    },
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_session_read",
+            "description": (
+                "读取 SSH 会话当前可用的输出（非阻塞式，短超时）。"
+                "用于检查命令执行后的输出，或确认交互结果。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "timeout": {
+                        "type": "integer",
+                        "description": "等待时间秒数，默认 2",
+                        "default": 2,
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ssh_session_close",
+            "description": (
+                "关闭 SSH 会话并获取完整的交互历史和 Evidence。"
+                "在测试步骤完成后必须调用以释放连接。"
+                "返回的 interaction_history 包含所有交互步骤的完整记录。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]
 
 
@@ -351,7 +493,7 @@ class ExecAgent:
     """
 
     SYSTEM_PROMPT_PATH = Path("src/prompts/exec_system.txt")
-    MAX_TOOL_ROUNDS = 15
+    MAX_TOOL_ROUNDS = 25
 
     def __init__(self, config: dict):
         # 初始化日志系统
@@ -426,12 +568,21 @@ class ExecAgent:
             cipher_suite=17,
         )
 
+        # SSH 长连接会话（跨 Tool Calling 保持）
+        self._ssh_session: Optional[SSHSession] = None
+
         # Tool 分发表
         self._tool_handlers = {
             "redfish_request": self._tool_redfish_request,
             "ipmi_command": self._tool_ipmi_command,
             "ssh_exec": self._tool_ssh_exec,
             "bmc_command_rag": self._tool_bmc_command_rag,
+            "ssh_session_open": self._tool_ssh_session_open,
+            "ssh_session_exec": self._tool_ssh_session_exec,
+            "ssh_session_expect": self._tool_ssh_session_expect,
+            "ssh_session_send": self._tool_ssh_session_send,
+            "ssh_session_read": self._tool_ssh_session_read,
+            "ssh_session_close": self._tool_ssh_session_close,
         }
 
         logger.info(f"使用模型: {self.model} | base_url: {self.base_url}")
@@ -479,6 +630,10 @@ class ExecAgent:
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
         self._ipmi_tool.close()
+        # 清理 SSH 长连接会话
+        if self._ssh_session:
+            await asyncio.to_thread(self._ssh_session.disconnect)
+            self._ssh_session = None
 
     # ==================================================================
     # 公开接口
@@ -509,6 +664,12 @@ class ExecAgent:
             record = self._build_failure_record(case, started_at, error_msg=str(e))
             self._save_record(record)
             return record
+        finally:
+            # 清理可能残留的 SSH 长连接会话
+            if self._ssh_session:
+                logger.info("清理残留的 SSH 会话")
+                await asyncio.to_thread(self._ssh_session.disconnect)
+                self._ssh_session = None
 
         # 解析 ExecutionRecord
         record = self._parse_record(final_content, case, started_at)
@@ -889,6 +1050,236 @@ class ExecAgent:
             )
 
         return SSHTool.to_json(result)
+
+    # ------------------------------------------------------------------
+    # SSH Session 工具（长连接 + 流式交互）
+    # ------------------------------------------------------------------
+
+    async def _tool_ssh_session_open(self, args: dict) -> str:
+        """打开 SSH 长连接会话。"""
+        if self._ssh_session and self._ssh_session.is_alive:
+            return json.dumps(
+                {
+                    "status": "already_open",
+                    "message": (
+                        f"SSH 会话已存在 "
+                        f"({self._ssh_session.host}:{self._ssh_session.port})"
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        session = SSHSession(
+            host=self.ssh_host,
+            port=self.ssh_port,
+            user=self.bmc_user,
+            password=self.bmc_password,
+        )
+
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(session.connect),
+                timeout=30,
+            )
+            self._ssh_session = session
+            logger.info(
+                f"[SSH Session] 已打开 {self.ssh_host}:{self.ssh_port}"
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self._ssh_session = None
+            return json.dumps(
+                {"error": f"SSH 会话打开失败: {e}"},
+                ensure_ascii=False,
+            )
+
+    async def _tool_ssh_session_exec(self, args: dict) -> str:
+        """在 SSH 会话中执行命令。"""
+        if not self._ssh_session or not self._ssh_session.is_alive:
+            return json.dumps(
+                {"error": "SSH 会话未打开或已断开，请先调用 ssh_session_open"},
+                ensure_ascii=False,
+            )
+
+        command = args.get("command", "")
+        timeout = args.get("timeout", 30)
+
+        if not command.strip():
+            return json.dumps(
+                {"error": "命令不能为空"},
+                ensure_ascii=False,
+            )
+
+        logger.info(f"[SSH Session] exec: {command[:80]}")
+
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._ssh_session.send_command, command, timeout
+                ),
+                timeout=timeout + 10,
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        except asyncio.TimeoutError:
+            return json.dumps(
+                {"error": f"命令执行超时 ({timeout}s): {command}"},
+                ensure_ascii=False,
+            )
+        except RuntimeError as e:
+            return json.dumps(
+                {"error": str(e)},
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps(
+                {"error": f"命令执行异常: {e}"},
+                ensure_ascii=False,
+            )
+
+    async def _tool_ssh_session_expect(self, args: dict) -> str:
+        """等待 SSH 会话中出现指定输出模式。"""
+        if not self._ssh_session or not self._ssh_session.is_alive:
+            return json.dumps(
+                {"error": "SSH 会话未打开或已断开"},
+                ensure_ascii=False,
+            )
+
+        patterns = args.get("patterns", [])
+        timeout = args.get("timeout", 10)
+
+        if not patterns:
+            return json.dumps(
+                {"error": "patterns 不能为空"},
+                ensure_ascii=False,
+            )
+
+        logger.info(
+            f"[SSH Session] expect: {patterns} (timeout={timeout}s)"
+        )
+
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._ssh_session.read_until, patterns, timeout
+                ),
+                timeout=timeout + 5,
+            )
+            # 日志中显示输出预览
+            output_preview = result.get("output", "")[-200:]
+            logger.info(
+                f"[SSH Session] expect result: "
+                f"matched={result.get('matched')}, "
+                f"output={output_preview}"
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        except asyncio.TimeoutError:
+            return json.dumps(
+                {
+                    "error": f"等待模式超时 ({timeout}s)",
+                    "patterns": patterns,
+                },
+                ensure_ascii=False,
+            )
+        except RuntimeError as e:
+            return json.dumps(
+                {"error": str(e)},
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps(
+                {"error": f"读取异常: {e}"},
+                ensure_ascii=False,
+            )
+
+    async def _tool_ssh_session_send(self, args: dict) -> str:
+        """向 SSH 会话发送文本。"""
+        if not self._ssh_session or not self._ssh_session.is_alive:
+            return json.dumps(
+                {"error": "SSH 会话未打开或已断开"},
+                ensure_ascii=False,
+            )
+
+        text = args.get("text", "")
+        is_password = args.get("is_password", False)
+        press_enter = args.get("press_enter", True)
+
+        if not text:
+            return json.dumps(
+                {"error": "text 不能为空"},
+                ensure_ascii=False,
+            )
+
+        log_text = "****" if is_password else text[:20]
+        logger.info(f"[SSH Session] send: {log_text}")
+
+        try:
+            result = await asyncio.to_thread(
+                self._ssh_session.send_line, text, is_password, press_enter
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        except RuntimeError as e:
+            return json.dumps(
+                {"error": str(e)},
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps(
+                {"error": f"发送异常: {e}"},
+                ensure_ascii=False,
+            )
+
+    async def _tool_ssh_session_read(self, args: dict) -> str:
+        """读取 SSH 会话当前可用输出。"""
+        if not self._ssh_session or not self._ssh_session.is_alive:
+            return json.dumps(
+                {"error": "SSH 会话未打开或已断开"},
+                ensure_ascii=False,
+            )
+
+        timeout = args.get("timeout", 2)
+
+        try:
+            result = await asyncio.to_thread(
+                self._ssh_session.read_available, timeout
+            )
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        except RuntimeError as e:
+            return json.dumps(
+                {"error": str(e)},
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps(
+                {"error": f"读取异常: {e}"},
+                ensure_ascii=False,
+            )
+
+    async def _tool_ssh_session_close(self, args: dict) -> str:
+        """关闭 SSH 会话并获取完整 Evidence。"""
+        if not self._ssh_session:
+            return json.dumps(
+                {
+                    "status": "no_session",
+                    "message": "没有打开的 SSH 会话",
+                },
+                ensure_ascii=False,
+            )
+
+        logger.info(
+            f"[SSH Session] 关闭会话 "
+            f"(interactions={self._ssh_session.interaction_count})"
+        )
+
+        try:
+            result = await asyncio.to_thread(self._ssh_session.disconnect)
+            self._ssh_session = None
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        except Exception as e:
+            self._ssh_session = None
+            return json.dumps(
+                {"error": f"关闭会话异常: {e}"},
+                ensure_ascii=False,
+            )
 
     async def _tool_bmc_command_rag(self, args: dict) -> str:
         """

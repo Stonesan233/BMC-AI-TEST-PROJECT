@@ -128,11 +128,74 @@ steps 中每个元素的关键字段：
 
 ## SSH 工具使用注意
 
+### 方式一：ssh_exec（单次执行，简单命令）
 调用 ssh_exec 时：
 - **不要**传 host/port/user/password 参数（工具会自动使用 BMC 配置）
 - 只需传 command 和（可选的）interactions
 - 交互式命令的 interactions 中，密码相关的 send 值使用 `{{ bmc_password }}`
 - 非交互式命令只需传 command
+
+### 方式二：SSH Session（长连接，流式交互）
+对于需要多步交互的场景（如 ipmcset adduser），必须使用 Session 工具：
+
+1. **ssh_session_open** - 打开 SSH 长连接会话（无需参数）
+2. **ssh_session_exec** - 在会话中执行命令并等待结果（适用于 ipmcget 等查询命令）
+3. **ssh_session_send** - 向会话发送文本（用于输入密码等，不等待输出）
+4. **ssh_session_expect** - 等待指定输出模式出现（如密码提示 "[Pp]assword"）
+5. **ssh_session_read** - 读取当前可用输出（短超时，非阻塞）
+6. **ssh_session_close** - 关闭会话，获取完整 interaction_history 和 Evidence
+
+#### Session 交互式添加用户示例流程：
+```
+1. ssh_session_open()                           # 建立连接
+2. ssh_session_exec("ipmcget -d userlist")       # 查询用户列表
+3. ssh_session_exec("ipmcset -d adduser -v testuser")  # 启动交互命令
+4. ssh_session_expect(["[Pp]assword"])            # 等待密码提示
+5. ssh_session_send("{{ bmc_password }}", is_password=true)  # 输入当前用户密码
+6. ssh_session_expect(["[Pp]assword"])            # 等待新密码提示
+7. ssh_session_send("Test@123456", is_password=true)  # 输入新密码
+8. ssh_session_expect(["[Pp]assword"])            # 等待确认密码提示
+9. ssh_session_send("Test@123456", is_password=true)  # 确认密码
+10. ssh_session_expect(["#"])                     # 等待 shell prompt（命令完成）
+11. ssh_session_exec("ipmcget -d userlist")       # 验证用户已创建
+12. ssh_session_close()                           # 关闭会话，获取 Evidence
+```
+
+#### Session 使用规则：
+- 使用 Session 时，**不要**再用 ssh_exec（避免连接冲突）
+- 每个测试步骤完成后必须调用 ssh_session_close 释放连接
+- 密码字段使用 is_password=true 参数（日志中脱敏）
+- ssh_session_expect 的 patterns 使用正则表达式语法
+
+#### send_command 超时 = 进入交互模式
+当 `ssh_session_exec` 返回 `status: "timeout"` 时，说明命令进入了交互模式（等待用户输入）。
+此时 `output` 字段已经包含了提示信息（如 "Input your password:"）。
+**你不需要再调用 ssh_session_expect 去等待这个提示，直接用 ssh_session_send 发送回应即可。**
+流程：`ssh_session_exec(cmd)` → timeout → `ssh_session_send(密码)` → `ssh_session_expect(下一个提示)`
+
+## 环境恢复（必须执行）
+
+每个测试用例执行完成后，**必须**将 BMC 环境恢复到测试前状态。环境恢复步骤不计入用例步骤，而是附加在最后执行：
+
+| 操作类型 | 恢复动作 |
+|---------|---------|
+| 添加了用户 | 用 `ipmcset -d deluser -v <username>` 删除（需输入当前用户密码） |
+| 修改了用户密码 | 恢复原密码 |
+| 修改了用户权限 | 恢复原权限 |
+| 修改了配置项 | 恢复原值 |
+
+**恢复流程（以删除用户为例）：**
+```
+ssh_session_exec("ipmcset -d deluser -v testuser001")   # 会超时进入交互模式
+ssh_session_send("{{ bmc_password }}", is_password=true)  # 输入当前用户密码确认
+ssh_session_expect(["successfully", "~", "#"])            # 等待完成
+ssh_session_exec("ipmcget -d userlist")                   # 验证已删除
+```
+
+**注意：**
+- 环境恢复步骤记录在 ExecutionRecord 的 `environment_recovery` 字段中
+- 如果恢复失败，在 `environment_recovery.warnings` 中标注
+- 恢复验证后才能调用 `ssh_session_close` 关闭会话
 
 {% if batch_cases %}
 ### 批量模式（{{ batch_cases|length }} 个用例）

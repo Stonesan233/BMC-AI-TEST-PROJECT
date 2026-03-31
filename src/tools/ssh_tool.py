@@ -114,6 +114,26 @@ class SSHTool:
         """关闭资源（无持久连接，空操作）。"""
         pass
 
+    def create_session(self) -> "SSHSession":
+        """
+        创建一个 SSH 长连接会话。
+
+        返回的 SSHSession 使用与当前 SSHTool 相同的连接参数，
+        支持 Agent 多轮 Tool Calling 中的动态交互。
+
+        Returns:
+            SSHSession 实例（尚未连接，需调用 session.connect()）
+        """
+        from src.tools.ssh_session import SSHSession
+
+        return SSHSession(
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
+            connect_timeout=self.connect_timeout,
+        )
+
     # ------------------------------------------------------------------
     # 公开接口
     # ------------------------------------------------------------------

@@ -1,0 +1,71 @@
+# openUBMC 测试用例 - SSH Session 交互式添加用户（流式模式）
+
+用例_编号: "TC-SSH-003"
+用例_名称: "SSH Session - 交互式创建用户（流式模式）"
+测试类型: "功能测试"
+优先级: "P1"
+
+预置条件:
+  - BMC SSH 接口可达（默认端口 10022）
+  - SSH 认证正常（Administrator 账户可用）
+  - 当前用户数未达上限（15）
+
+测试步骤:
+  - step_id: "step_001"
+    description: "打开 SSH 长连接会话"
+    tool: "ssh_session_open"
+    expected:
+      status: "connected"
+
+  - step_id: "step_002"
+    description: "查询当前用户列表，确认用户数量和 Administrator 存在"
+    interface_preference: "cli"
+    command: "ipmcget -d userlist"
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - "Administrator"
+
+  - step_id: "step_003"
+    description: >-
+      通过 SSH Session 交互式添加用户 testuser001。
+      执行 ipmcset -d adduser -v testuser001 后，
+      等待密码提示，依次输入当前用户密码、新用户密码、二次确认密码。
+      注意：ipmcset adduser 的交互流程为：
+      1) 输入当前用户密码（用于身份验证）
+      2) 输入新用户密码
+      3) 二次确认新用户密码
+    interface_preference: "cli"
+    command: "ipmcset -d adduser -v testuser001"
+    session_mode: "interactive"
+    expected:
+      success: true
+
+  - step_id: "step_004"
+    description: "验证新用户 testuser001 出现在用户列表中"
+    interface_preference: "cli"
+    command: "ipmcget -d userlist"
+    expected:
+      exit_code: 0
+      stdout_contains:
+        - "testuser001"
+
+  - step_id: "step_005"
+    description: "关闭 SSH 会话，获取完整 Evidence 和交互历史"
+    tool: "ssh_session_close"
+    expected:
+      status: "disconnected"
+      evidence_contains:
+        - "interaction_history"
+
+预期结果:
+  - SSH Session 成功建立并保持连接
+  - ipmcset 交互式命令执行成功，三次密码输入均完成
+  - 用户 testuser001 成功创建
+  - 用户 testuser001 出现在用户列表中
+  - Evidence 包含完整的 interaction_history
+  - 交互日志中密码已脱敏（显示为 ****）
+  - 会话正常关闭，连接释放
+
+清理步骤:
+  - 删除测试用户 testuser001（使用 ipmcset -d deluser -v testuser001）

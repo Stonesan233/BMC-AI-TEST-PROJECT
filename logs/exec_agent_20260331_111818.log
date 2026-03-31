@@ -1,0 +1,536 @@
+11:18:18 [INFO] 日志文件: logs\exec_agent_20260331_111818.log
+11:18:18 [DEBUG] api_key_raw = '${MINIMAX_API_KEY}'
+11:18:18 [DEBUG] env_var='MINIMAX_API_KEY', from_os_environ=no
+11:18:18 [DEBUG] from_dotenv=yes
+11:18:18 [INFO] API key loaded: 'sk-cp-CO...-47M' (len=125)
+11:18:18 [INFO] 使用模型: MiniMax-M2.7 | base_url: https://api.minimaxi.com/v1
+11:18:18 [INFO] 参数: temperature=0.1, max_tokens=8192
+11:18:18 [INFO] 目标 BMC: 172.23.17.208:10443 | IPMI port: 10623 | SSH: 127.0.0.1:10022
+11:18:18 [INFO] 批量执行 1 个用例
+11:18:18 [INFO] --- 用例 1/1 ---
+11:18:18 [INFO] 开始执行: SSH adduser - 交互式创建用户
+11:18:18 [INFO] --- 第 1 轮 ---
+11:18:29 [DEBUG] LLM 文本输出 (408 chars): <think>
+用户要求执行一个测试用例：SSH adduser - 交互式创建用户。
+
+根据测试用例：
+1. step_001: 查询当前用户列表
+2. step_002: 通过交互式 ipmcset 命令添加用户 testuser001
+3. step_003: 验证新用户出现在用户列表中
+
+我需要使用 SSH Session 来执行这个测试，因为 step_002 需要交互式输入密码。
+
+让我开始执行：
+1. 首先打开 SSH Session
+2. 执行 step_001: ipmcget -d userlist
+3. 执行 step_002: ipmcset -d adduser -v testuser001（需要交互）
+4. 执行 step_003: ipmcget -d userlist
+5. 关闭会话
+6. 输出 ExecutionRecord JSON
+
+让我开始。
+</think>
+
+
+
+11:18:29 [INFO] LLM 请求 Tool Calls: ['ssh_session_open']
+11:18:29 [INFO] [Tool Call] ssh_session_open({})
+11:18:33 [INFO] [SSH Session] 已打开 127.0.0.1:10022
+11:18:33 [INFO] [Tool Result] ssh_session_open -> {
+  "status": "connected",
+  "message": "SSH 会话已建立 (127.0.0.1:10022)",
+  "initial_output": "Last login: Tue Aug 15 09:20:59 2023 from 10.0.2.2\r\r\n~ ~ $ "
+}
+11:18:33 [DEBUG] [Tool Result Full] ssh_session_open: {
+  "status": "connected",
+  "message": "SSH 会话已建立 (127.0.0.1:10022)",
+  "initial_output": "Last login: Tue Aug 15 09:20:59 2023 from 10.0.2.2\r\r\n~ ~ $ "
+}
+11:18:33 [INFO] --- 第 2 轮 ---
+11:18:36 [DEBUG] LLM 文本输出 (53 chars): <think>
+SSH 会话已建立。现在执行 step_001：查询当前用户列表。
+</think>
+
+
+
+11:18:36 [INFO] LLM 请求 Tool Calls: ['ssh_session_exec']
+11:18:36 [INFO] [Tool Call] ssh_session_exec({"command": "ipmcget -d userlist"})
+11:18:36 [INFO] [SSH Session] exec: ipmcget -d userlist
+11:18:37 [INFO] [Tool Result] ssh_session_exec -> {
+  "status": "completed",
+  "command": "ipmcget -d userlist",
+  "output": "ID      Name              Privilege      Interface                                       PublicKeyHash                      
+11:18:37 [DEBUG] [Tool Result Full] ssh_session_exec: {
+  "status": "completed",
+  "command": "ipmcget -d userlist",
+  "output": "ID      Name              Privilege      Interface                                       PublicKeyHash                                   State\r\n2       Administrator     ADMINISTRATOR  IPMI,Local,SFTP,Web,SSH,Redfish,SNMP            NA                                              Enabled",
+  "raw_output": "ipmcget -d userlist\r\nID      Name              Privilege      Interface                                       Pu
+11:18:37 [INFO] --- 第 3 轮 ---
+11:18:40 [DEBUG] LLM 文本输出 (105 chars): <think>
+Step 001 完成，查询到了当前用户列表，包含 Administrator 用户。
+
+现在执行 step_002：添加用户 testuser001。这需要交互式命令。
+</think>
+
+
+
+11:18:40 [INFO] LLM 请求 Tool Calls: ['ssh_session_exec']
+11:18:40 [INFO] [Tool Call] ssh_session_exec({"command": "ipmcset -d adduser -v testuser001", "timeout": 15})
+11:18:40 [INFO] [SSH Session] exec: ipmcset -d adduser -v testuser001
+11:18:55 [INFO] [Tool Result] ssh_session_exec -> {
+  "status": "timeout",
+  "command": "ipmcset -d adduser -v testuser001",
+  "output": "Input your password:",
+  "raw_output": "ipmcset -d adduser -v testuser001\r\nInput your password:",
+  "matched_p
+11:18:55 [DEBUG] [Tool Result Full] ssh_session_exec: {
+  "status": "timeout",
+  "command": "ipmcset -d adduser -v testuser001",
+  "output": "Input your password:",
+  "raw_output": "ipmcset -d adduser -v testuser001\r\nInput your password:",
+  "matched_prompt": false
+}
+11:18:55 [INFO] --- 第 4 轮 ---
+11:18:59 [DEBUG] LLM 文本输出 (66 chars): <think>
+命令超时等待，说明进入了交互模式，提示输入密码。我需要发送密码 "Test@123456"。
+</think>
+
+
+
+11:18:59 [INFO] LLM 请求 Tool Calls: ['ssh_session_send']
+11:18:59 [INFO] [Tool Call] ssh_session_send({"text": "Test@123456", "is_password": true})
+11:18:59 [INFO] [SSH Session] send: ****
+11:18:59 [INFO] [Tool Result] ssh_session_send -> {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:18:59 [DEBUG] [Tool Result Full] ssh_session_send: {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:18:59 [INFO] --- 第 5 轮 ---
+11:19:01 [DEBUG] LLM 文本输出 (40 chars): <think>
+密码已发送。现在等待第二次密码确认提示。
+</think>
+
+
+
+11:19:01 [INFO] LLM 请求 Tool Calls: ['ssh_session_expect']
+11:19:01 [INFO] [Tool Call] ssh_session_expect({"patterns": ["[Pp]assword"], "timeout": 10})
+11:19:01 [INFO] [SSH Session] expect: ['[Pp]assword'] (timeout=10s)
+11:19:01 [INFO] [SSH Session] expect result: matched=True, output=ipmcset -d adduser -v testuser001
+Input your password:
+Authorization failed because the user name or password is incorrect, or your account is locked.
+~ ~ $ 
+11:19:01 [INFO] [Tool Result] ssh_session_expect -> {
+  "status": "matched",
+  "output": "ipmcset -d adduser -v testuser001\r\nInput your password:\r\nAuthorization failed because the user name or password is incorrect, or your account is locked.\r\n~ 
+11:19:01 [DEBUG] [Tool Result Full] ssh_session_expect: {
+  "status": "matched",
+  "output": "ipmcset -d adduser -v testuser001\r\nInput your password:\r\nAuthorization failed because the user name or password is incorrect, or your account is locked.\r\n~ ~ $ ",
+  "matched": true,
+  "matched_pattern": "[Pp]assword",
+  "timeout_seconds": 10
+}
+11:19:01 [INFO] --- 第 6 轮 ---
+11:19:06 [DEBUG] LLM 文本输出 (253 chars): <think>
+出现错误 "Authorization failed because the user name or password is incorrect"。这个错误说明 ipmcset -d adduser 命令并不是用来设置新用户密码的，而是验证当前用户密码。
+
+根据 BMC 通用设计，ipmcset -d adduser 命令的执行流程应该是：
+1. 输入当前用户密码（验证当前操作者身份）
+2. 输入新用户密码
+3. 确认新用户密码
+
+让我重新执行添加用户的命令。
+</think>
+
+
+
+11:19:06 [INFO] LLM 请求 Tool Calls: ['ssh_session_exec']
+11:19:06 [INFO] [Tool Call] ssh_session_exec({"command": "ipmcset -d adduser -v testuser001", "timeout": 15})
+11:19:06 [INFO] [SSH Session] exec: ipmcset -d adduser -v testuser001
+11:19:21 [INFO] [Tool Result] ssh_session_exec -> {
+  "status": "timeout",
+  "command": "ipmcset -d adduser -v testuser001",
+  "output": "Input your password:",
+  "raw_output": "ipmcset -d adduser -v testuser001\r\nInput your password:",
+  "matched_p
+11:19:21 [DEBUG] [Tool Result Full] ssh_session_exec: {
+  "status": "timeout",
+  "command": "ipmcset -d adduser -v testuser001",
+  "output": "Input your password:",
+  "raw_output": "ipmcset -d adduser -v testuser001\r\nInput your password:",
+  "matched_prompt": false
+}
+11:19:21 [INFO] --- 第 7 轮 ---
+11:19:24 [DEBUG] LLM 文本输出 (54 chars): <think>
+好的，现在输入当前用户（Administrator）的密码进行验证。
+</think>
+
+
+
+11:19:24 [INFO] LLM 请求 Tool Calls: ['ssh_session_send']
+11:19:24 [INFO] [Tool Call] ssh_session_send({"text": "Admin@90000", "is_password": true})
+11:19:24 [INFO] [SSH Session] send: ****
+11:19:24 [INFO] [Tool Result] ssh_session_send -> {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:19:24 [DEBUG] [Tool Result Full] ssh_session_send: {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:19:24 [INFO] --- 第 8 轮 ---
+11:19:26 [DEBUG] LLM 文本输出 (41 chars): <think>
+现在等待第二次密码提示（设置新用户密码）。
+</think>
+
+
+
+11:19:26 [INFO] LLM 请求 Tool Calls: ['ssh_session_expect']
+11:19:26 [INFO] [Tool Call] ssh_session_expect({"patterns": ["[Pp]assword"], "timeout": 10})
+11:19:26 [INFO] [SSH Session] expect: ['[Pp]assword'] (timeout=10s)
+11:19:26 [INFO] [SSH Session] expect result: matched=True, output=ipmcset -d adduser -v testuser001
+Input your password:
+Password:
+11:19:26 [INFO] [Tool Result] ssh_session_expect -> {
+  "status": "matched",
+  "output": "ipmcset -d adduser -v testuser001\r\nInput your password:\r\nPassword:",
+  "matched": true,
+  "matched_pattern": "[Pp]assword",
+  "timeout_seconds": 10
+}
+11:19:26 [DEBUG] [Tool Result Full] ssh_session_expect: {
+  "status": "matched",
+  "output": "ipmcset -d adduser -v testuser001\r\nInput your password:\r\nPassword:",
+  "matched": true,
+  "matched_pattern": "[Pp]assword",
+  "timeout_seconds": 10
+}
+11:19:26 [INFO] --- 第 9 轮 ---
+11:19:28 [DEBUG] LLM 文本输出 (69 chars): <think>
+第一次密码验证通过，现在出现第二次密码提示（新用户密码）。输入新用户密码 Test@123456。
+</think>
+
+
+
+11:19:28 [INFO] LLM 请求 Tool Calls: ['ssh_session_send']
+11:19:28 [INFO] [Tool Call] ssh_session_send({"text": "Test@123456", "is_password": true})
+11:19:28 [INFO] [SSH Session] send: ****
+11:19:29 [INFO] [Tool Result] ssh_session_send -> {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:19:29 [DEBUG] [Tool Result Full] ssh_session_send: {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:19:29 [INFO] --- 第 10 轮 ---
+11:19:31 [DEBUG] LLM 文本输出 (31 chars): <think>
+现在等待确认密码提示。
+</think>
+
+
+
+11:19:31 [INFO] LLM 请求 Tool Calls: ['ssh_session_expect']
+11:19:31 [INFO] [Tool Call] ssh_session_expect({"patterns": ["[Pp]assword"], "timeout": 10})
+11:19:31 [INFO] [SSH Session] expect: ['[Pp]assword'] (timeout=10s)
+11:19:31 [INFO] [SSH Session] expect result: matched=True, output=
+Confirm password:
+11:19:31 [INFO] [Tool Result] ssh_session_expect -> {
+  "status": "matched",
+  "output": "\r\nConfirm password:",
+  "matched": true,
+  "matched_pattern": "[Pp]assword",
+  "timeout_seconds": 10
+}
+11:19:31 [DEBUG] [Tool Result Full] ssh_session_expect: {
+  "status": "matched",
+  "output": "\r\nConfirm password:",
+  "matched": true,
+  "matched_pattern": "[Pp]assword",
+  "timeout_seconds": 10
+}
+11:19:31 [INFO] --- 第 11 轮 ---
+11:19:33 [DEBUG] LLM 文本输出 (48 chars): <think>
+出现确认密码提示，输入确认密码 Test@123456。
+</think>
+
+
+
+11:19:33 [INFO] LLM 请求 Tool Calls: ['ssh_session_send']
+11:19:33 [INFO] [Tool Call] ssh_session_send({"text": "Test@123456", "is_password": true})
+11:19:33 [INFO] [SSH Session] send: ****
+11:19:33 [INFO] [Tool Result] ssh_session_send -> {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:19:33 [DEBUG] [Tool Result Full] ssh_session_send: {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:19:33 [INFO] --- 第 12 轮 ---
+11:19:36 [DEBUG] LLM 文本输出 (36 chars): <think>
+现在等待命令完成，看看结果如何。
+</think>
+
+
+
+11:19:36 [INFO] LLM 请求 Tool Calls: ['ssh_session_expect']
+11:19:36 [INFO] [Tool Call] ssh_session_expect({"patterns": [".*"], "timeout": 10})
+11:19:36 [INFO] [SSH Session] expect: ['.*'] (timeout=10s)
+11:19:36 [INFO] [SSH Session] expect result: matched=True, output=
+Add user successfully.
+~ ~ $ 
+11:19:36 [INFO] [Tool Result] ssh_session_expect -> {
+  "status": "matched",
+  "output": "\r\nAdd user successfully.\r\n~ ~ $ ",
+  "matched": true,
+  "matched_pattern": ".*",
+  "timeout_seconds": 10
+}
+11:19:36 [DEBUG] [Tool Result Full] ssh_session_expect: {
+  "status": "matched",
+  "output": "\r\nAdd user successfully.\r\n~ ~ $ ",
+  "matched": true,
+  "matched_pattern": ".*",
+  "timeout_seconds": 10
+}
+11:19:36 [INFO] --- 第 13 轮 ---
+11:19:38 [DEBUG] LLM 文本输出 (68 chars): <think>
+用户添加成功！现在执行 step_003：验证新用户 testuser001 出现在用户列表中。
+</think>
+
+
+
+11:19:38 [INFO] LLM 请求 Tool Calls: ['ssh_session_exec']
+11:19:38 [INFO] [Tool Call] ssh_session_exec({"command": "ipmcget -d userlist"})
+11:19:38 [INFO] [SSH Session] exec: ipmcget -d userlist
+11:19:40 [INFO] [Tool Result] ssh_session_exec -> {
+  "status": "completed",
+  "command": "ipmcget -d userlist",
+  "output": "ID      Name              Privilege      Interface                                       PublicKeyHash                      
+11:19:40 [DEBUG] [Tool Result Full] ssh_session_exec: {
+  "status": "completed",
+  "command": "ipmcget -d userlist",
+  "output": "ID      Name              Privilege      Interface                                       PublicKeyHash                                   State\r\n2       Administrator     ADMINISTRATOR  IPMI,Local,SFTP,Web,SSH,Redfish,SNMP            NA                                              Enabled        \r\n3       testuser001       NO ACCESS      IPMI,Local,SFTP,Web,SSH,Redfish,SNMP            NA                               
+11:19:40 [INFO] --- 第 14 轮 ---
+11:19:44 [DEBUG] LLM 文本输出 (146 chars): <think>
+验证成功！用户 testuser001 已经创建并出现在用户列表中（ID 3）。现在需要：
+1. 关闭 SSH 会话获取完整的交互历史
+2. 执行环境恢复（删除测试用户）
+3. 输出 ExecutionRecord JSON
+
+让我先关闭会话获取证据。
+</think>
+
+
+
+11:19:44 [INFO] LLM 请求 Tool Calls: ['ssh_session_close']
+11:19:44 [INFO] [Tool Call] ssh_session_close({})
+11:19:44 [INFO] [SSH Session] 关闭会话 (interactions=13)
+11:19:44 [INFO] [Tool Result] ssh_session_close -> {
+  "status": "disconnected",
+  "host": "127.0.0.1",
+  "port": 10022,
+  "opened_at": "2026-03-31T11:18:33.570232",
+  "closed_at": "2026-03-31T11:19:44.228460",
+  "interaction_count": 13,
+  "interactio
+11:19:44 [DEBUG] [Tool Result Full] ssh_session_close: {
+  "status": "disconnected",
+  "host": "127.0.0.1",
+  "port": 10022,
+  "opened_at": "2026-03-31T11:18:33.570232",
+  "closed_at": "2026-03-31T11:19:44.228460",
+  "interaction_count": 13,
+  "interaction_history": [
+    {
+      "timestamp": "2026-03-31T11:18:33.570232",
+      "action": "connect",
+      "input": "",
+      "output": "Last login: Tue Aug 15 09:20:59 2023 from 10.0.2.2\r\r\n\u001b[32m~ ~\u001b[m $ ",
+      "matched": true,
+      "is_password": false
+    },
+    {
+      "timestamp": "20
+11:19:44 [INFO] --- 第 15 轮 ---
+11:19:54 [DEBUG] LLM 文本输出 (83 chars): <think>
+测试步骤执行完成，现在需要执行环境恢复（删除测试用户 testuser001）。让我重新打开一个 SSH 会话来执行清理操作。
+</think>
+
+
+
+11:19:54 [INFO] LLM 请求 Tool Calls: ['ssh_session_open']
+11:19:54 [INFO] [Tool Call] ssh_session_open({})
+11:19:58 [INFO] [SSH Session] 已打开 127.0.0.1:10022
+11:19:58 [INFO] [Tool Result] ssh_session_open -> {
+  "status": "connected",
+  "message": "SSH 会话已建立 (127.0.0.1:10022)",
+  "initial_output": "Last login: Tue Aug 15 09:21:04 2023 from 10.0.2.2\r\r\n~ ~ $ "
+}
+11:19:58 [DEBUG] [Tool Result Full] ssh_session_open: {
+  "status": "connected",
+  "message": "SSH 会话已建立 (127.0.0.1:10022)",
+  "initial_output": "Last login: Tue Aug 15 09:21:04 2023 from 10.0.2.2\r\r\n~ ~ $ "
+}
+11:19:58 [INFO] --- 第 16 轮 ---
+11:20:00 [DEBUG] LLM 文本输出 (32 chars): <think>
+现在执行删除用户的命令。
+</think>
+
+
+
+11:20:00 [INFO] LLM 请求 Tool Calls: ['ssh_session_exec']
+11:20:00 [INFO] [Tool Call] ssh_session_exec({"command": "ipmcset -d deluser -v testuser001", "timeout": 15})
+11:20:00 [INFO] [SSH Session] exec: ipmcset -d deluser -v testuser001
+11:20:15 [INFO] [Tool Result] ssh_session_exec -> {
+  "status": "timeout",
+  "command": "ipmcset -d deluser -v testuser001",
+  "output": "Input your password:",
+  "raw_output": "ipmcset -d deluser -v testuser001\r\nInput your password:",
+  "matched_p
+11:20:15 [DEBUG] [Tool Result Full] ssh_session_exec: {
+  "status": "timeout",
+  "command": "ipmcset -d deluser -v testuser001",
+  "output": "Input your password:",
+  "raw_output": "ipmcset -d deluser -v testuser001\r\nInput your password:",
+  "matched_prompt": false
+}
+11:20:15 [INFO] --- 第 17 轮 ---
+11:20:18 [DEBUG] LLM 文本输出 (41 chars): <think>
+删除用户命令需要输入当前用户密码进行验证。
+</think>
+
+
+
+11:20:18 [INFO] LLM 请求 Tool Calls: ['ssh_session_send']
+11:20:18 [INFO] [Tool Call] ssh_session_send({"text": "Admin@90000", "is_password": true})
+11:20:18 [INFO] [SSH Session] send: ****
+11:20:19 [INFO] [Tool Result] ssh_session_send -> {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:20:19 [DEBUG] [Tool Result Full] ssh_session_send: {
+  "status": "sent",
+  "sent_text": "****",
+  "is_password": true
+}
+11:20:19 [INFO] --- 第 18 轮 ---
+11:20:21 [DEBUG] LLM 文本输出 (27 chars): <think>
+等待删除结果。
+</think>
+
+
+
+11:20:21 [INFO] LLM 请求 Tool Calls: ['ssh_session_expect']
+11:20:21 [INFO] [Tool Call] ssh_session_expect({"patterns": [".*"], "timeout": 10})
+11:20:21 [INFO] [SSH Session] expect: ['.*'] (timeout=10s)
+11:20:21 [INFO] [SSH Session] expect result: matched=True, output=ipmcset -d deluser -v testuser001
+Input your password:
+Delete user successfully.
+~ ~ $ 
+11:20:21 [INFO] [Tool Result] ssh_session_expect -> {
+  "status": "matched",
+  "output": "ipmcset -d deluser -v testuser001\r\nInput your password:\r\nDelete user successfully.\r\n~ ~ $ ",
+  "matched": true,
+  "matched_pattern": ".*",
+  "timeout_second
+11:20:21 [DEBUG] [Tool Result Full] ssh_session_expect: {
+  "status": "matched",
+  "output": "ipmcset -d deluser -v testuser001\r\nInput your password:\r\nDelete user successfully.\r\n~ ~ $ ",
+  "matched": true,
+  "matched_pattern": ".*",
+  "timeout_seconds": 10
+}
+11:20:21 [INFO] --- 第 19 轮 ---
+11:20:24 [DEBUG] LLM 文本输出 (38 chars): <think>
+用户删除成功！现在验证用户已被删除。
+</think>
+
+
+
+11:20:24 [INFO] LLM 请求 Tool Calls: ['ssh_session_exec']
+11:20:24 [INFO] [Tool Call] ssh_session_exec({"command": "ipmcget -d userlist"})
+11:20:24 [INFO] [SSH Session] exec: ipmcget -d userlist
+11:20:25 [INFO] [Tool Result] ssh_session_exec -> {
+  "status": "completed",
+  "command": "ipmcget -d userlist",
+  "output": "ID      Name              Privilege      Interface                                       PublicKeyHash                      
+11:20:25 [DEBUG] [Tool Result Full] ssh_session_exec: {
+  "status": "completed",
+  "command": "ipmcget -d userlist",
+  "output": "ID      Name              Privilege      Interface                                       PublicKeyHash                                   State\r\n2       Administrator     ADMINISTRATOR  IPMI,Local,SFTP,Web,SSH,Redfish,SNMP            NA                                              Enabled",
+  "raw_output": "ipmcget -d userlist\r\nID      Name              Privilege      Interface                                       Pu
+11:20:25 [INFO] --- 第 20 轮 ---
+11:20:28 [DEBUG] LLM 文本输出 (64 chars): <think>
+验证用户已删除，只有 Administrator 用户存在。环境恢复完成。现在关闭会话。
+</think>
+
+
+
+11:20:28 [INFO] LLM 请求 Tool Calls: ['ssh_session_close']
+11:20:28 [INFO] [Tool Call] ssh_session_close({})
+11:20:28 [INFO] [SSH Session] 关闭会话 (interactions=5)
+11:20:28 [INFO] [Tool Result] ssh_session_close -> {
+  "status": "disconnected",
+  "host": "127.0.0.1",
+  "port": 10022,
+  "opened_at": "2026-03-31T11:19:58.404674",
+  "closed_at": "2026-03-31T11:20:28.154525",
+  "interaction_count": 5,
+  "interaction
+11:20:28 [DEBUG] [Tool Result Full] ssh_session_close: {
+  "status": "disconnected",
+  "host": "127.0.0.1",
+  "port": 10022,
+  "opened_at": "2026-03-31T11:19:58.404674",
+  "closed_at": "2026-03-31T11:20:28.154525",
+  "interaction_count": 5,
+  "interaction_history": [
+    {
+      "timestamp": "2026-03-31T11:19:58.404674",
+      "action": "connect",
+      "input": "",
+      "output": "Last login: Tue Aug 15 09:21:04 2023 from 10.0.2.2\r\r\n\u001b[32m~ ~\u001b[m $ ",
+      "matched": true,
+      "is_password": false
+    },
+    {
+      "timestamp": "202
+11:20:28 [INFO] --- 第 21 轮 ---
+11:21:09 [DEBUG] LLM 文本输出 (6275 chars): <think>
+测试执行完成，环境恢复完成。现在我需要输出完整的 ExecutionRecord JSON。
+
+测试结果总结：
+- step_001: 查询用户列表成功，Administrator 用户存在
+- step_002: 添加用户成功（需要先验证当前用户密码 Admin@90000，然后设置新用户密码 Test@123456，确认密码）
+- step_003: 验证新用户 testuser001 成功创建
+- 环境恢复: 删除测试用户成功
+
+需要注意：测试用例中描述的交互流程与实际 BMC 行为不完全一致。实际流程是：
+1. 第一次密码输入是验证当前操作用户身份
+2. 第二次密码输入是设置新用户密码
+3. 第三次密码输入是确认新用户密码
+
+我按照实际的 BMC 行为执行了测试。
+</think>
+
+{
+  "execution_id": "exec_placeholder",
+  "case_id": "TC-SSH-002",
+  "case_name": "SSH adduser - 交互式创建用户",
+  "environment": {
+    "bmc_host":
+11:21:09 [INFO] 成功解析 ExecutionRecord
+11:21:09 [INFO] 执行完成: SSH adduser - 交互式创建用户 -> completed
