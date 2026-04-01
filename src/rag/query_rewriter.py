@@ -44,22 +44,24 @@ RETRY_DELAYS = [1, 2]
 # System Prompt
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """\
-你是 IPMI/BMC 命令检索系统的查询扩展引擎。
+你是 IPMI/BMC/Redfish 命令检索系统的查询扩展引擎。
 
 你的任务：将用户的模糊/场景化查询扩展为 3~5 条精准的检索查询。
-扩展查询应覆盖不同角度：英文命令名、中文命令名、功能关键词、NetFn/CMD 编码等。
+扩展查询应覆盖不同角度：英文命令名、中文命令名、功能关键词、Redfish URI 路径、HTTP 方法等。
 
 规则：
 1. 必须输出一个 JSON 数组，包含 3~5 个字符串
 2. 不要输出任何其他内容（不要解释、不要标注）
 3. 每条查询应该短小精悍（2~8 个词）
 4. 包含原始查询中未明确写出但相关的精确术语
+5. 如果查询涉及 Redfish/REST 操作，扩展结果应包含 URI 路径和 HTTP 方法
 """
 
 # ---------------------------------------------------------------------------
 # Few-shot 示例
 # ---------------------------------------------------------------------------
 FEW_SHOT_EXAMPLES = [
+    # --- IPMI 示例 ---
     {
         "input": "怎么控制风扇转速",
         "output": ["Set Fan Speed", "设置风扇转速", "风扇控制命令", "Fan Speed Control", "风扇调速策略"],
@@ -75,6 +77,57 @@ FEW_SHOT_EXAMPLES = [
     {
         "input": "查看CPU温度",
         "output": ["Get CPU Reading", "获取CPU读数", "CPU温度", "Sensor Reading", "CPU Temperature"],
+    },
+    # --- Redfish 示例 ---
+    {
+        "input": "查看服务器电源状态",
+        "output": ["PowerState GET", "/redfish/v1/Systems Power", "查询电源状态", "System Power", "电源控制"],
+    },
+    {
+        "input": "重启系统",
+        "output": [
+            "ComputerSystem.Reset POST",
+            "/redfish/v1/Systems/Actions/Reset",
+            "GracefulRestart ForceRestart",
+            "系统重启 ResetType",
+        ],
+    },
+    {
+        "input": "配置网络接口IP地址",
+        "output": [
+            "EthernetInterface PATCH",
+            "/redfish/v1/Managers/EthernetInterfaces",
+            "修改网卡IP地址",
+            "IPv4Address Static",
+            "网络配置 IPAddress",
+        ],
+    },
+    {
+        "input": "查看所有传感器读数",
+        "output": [
+            "Thermal GET /redfish/v1/Chassis/Thermal",
+            "传感器 Temperature Fan",
+            "Sensor Reading",
+            "Chassis Thermal Sensors",
+        ],
+    },
+    {
+        "input": "创建一个新用户",
+        "output": [
+            "AccountService POST",
+            "/redfish/v1/AccountService/Accounts",
+            "添加用户 Create User",
+            "UserName Password RoleId",
+        ],
+    },
+    {
+        "input": "查看BMC固件版本",
+        "output": [
+            "Manager GET FirmwareVersion",
+            "/redfish/v1/Managers firmware",
+            "查询固件版本",
+            "BMC Version UpdateService",
+        ],
     },
 ]
 

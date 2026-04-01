@@ -119,12 +119,9 @@ def _is_relevant(expected_keywords: List[str], metadata: Dict) -> bool:
     判断检索结果是否与 Redfish 查询相关。
 
     检查字段: section, description, chinese_name, english_name, full_title,
-              resource_uri, http_method, schema_name, doc_type
+              resource_uri, http_method, schema_name
+    注意: doc_type 过滤已在检索层完成, 此处不再检查
     """
-    # 只考虑 Redfish 文档的结果
-    if metadata.get("doc_type") != "redfish":
-        return False
-
     fields = [
         metadata.get("section", ""),
         metadata.get("description", ""),
@@ -271,7 +268,7 @@ async def run_evaluation(output_file: str) -> None:
     print(f"[OK] {len(query_embeddings)}/{len(query_texts)} queries embedded")
 
     # ------------------------------------------------------------------
-    # 多模式检索 (不过滤 chunk_type, 让 Redfish 和 IPMI 混合检索)
+    # 多模式检索 (doc_type=redfish 过滤, 解决 IPMI 抢占问题)
     # ------------------------------------------------------------------
     modes = {
         "vector":     1.0,
@@ -293,6 +290,7 @@ async def run_evaluation(output_file: str) -> None:
                 query_embedding=emb,
                 top_k=5,
                 alpha=alpha,
+                doc_type="redfish",
             )
             top_metas = [r["metadata"] for r in results]
             all_mode_results[mode_name].append({

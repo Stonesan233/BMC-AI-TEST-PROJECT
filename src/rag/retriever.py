@@ -167,14 +167,57 @@ class HybridRetriever:
             f"BM25: {N} docs, {len(self.idf)} tokens, avgdl={self.avgdl:.1f}"
         )
 
+    def _build_where_filter(
+        self,
+        chunk_type: Optional[str] = None,
+        doc_type: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        构建 Chroma where 过滤条件.
+
+        支持同时按 chunk_type 和 doc_type 过滤:
+          - 单条件: {"doc_type": "redfish"}
+          - 多条件: {"$and": [{"doc_type": "redfish"}, {"chunk_type": "resource"}]}
+        """
+        conditions: List[Dict[str, str]] = []
+        if doc_type:
+            conditions.append({"doc_type": doc_type})
+        if chunk_type:
+            conditions.append({"chunk_type": chunk_type})
+        if not conditions:
+            return None
+        if len(conditions) == 1:
+            return conditions[0]
+        return {"$and": conditions}
+
+    def _matches_filters(
+        self,
+        metadata: Dict[str, Any],
+        chunk_type: Optional[str] = None,
+        doc_type: Optional[str] = None,
+    ) -> bool:
+        """检查文档 metadata 是否匹配过滤条件 (用于 BM25 逐条过滤)."""
+        if doc_type and metadata.get("doc_type") != doc_type:
+            return False
+        if chunk_type and metadata.get("chunk_type") != chunk_type:
+            return False
+        return True
+
     def _bm25_search(
         self,
         query: str,
         top_k: int,
         chunk_type: Optional[str] = None,
+        doc_type: Optional[str] = None,
     ) -> List[Tuple[int, float]]:
         """
         BM25 关键词检索.
+
+        Args:
+            query: 查询文本
+            top_k: 返回结果数
+            chunk_type: 按 chunk_type 过滤 (如 "command", "resource")
+            doc_type: 按文档类型过滤 (如 "ipmi", "redfish")
 
         Returns:
             [(doc_idx, bm25_score)] 按 score 降序
@@ -185,10 +228,9 @@ class HybridRetriever:
 
         scores: List[Tuple[int, float]] = []
         for i in range(len(self.documents)):
-            # 按 chunk_type 过滤
-            if chunk_type:
-                if self.metadatas[i].get("chunk_type") != chunk_type:
-                    continue
+            # 按 metadata 过滤
+            if not self._matches_filters(self.metadatas[i], chunk_type, doc_type):
+                continue
 
             score = 0.0
             tf_map = self.doc_tf[i]
@@ -220,14 +262,21 @@ class HybridRetriever:
         query_embedding: List[float],
         top_k: int,
         chunk_type: Optional[str] = None,
+        doc_type: Optional[str] = None,
     ) -> List[Tuple[int, float]]:
         """
         Chroma 向量检索.
 
+        Args:
+            query_embedding: 查询向量
+            top_k: 返回结果数
+            chunk_type: 按 chunk_type 过滤
+            doc_type: 按文档类型过滤 (如 "ipmi", "redfish")
+
         Returns:
             [(doc_idx, cosine_distance)] 按 distance 升序
         """
-        where_filter = {"chunk_type": chunk_type} if chunk_type else None
+        where_filter = self._build_where_filter(chunk_type, doc_type)
         results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k,
@@ -285,6 +334,7 @@ class HybridRetriever:
         top_k: int = 5,
         alpha: Optional[float] = None,
         chunk_type: Optional[str] = None,
+        doc_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         混合检索: 向量 + BM25 + RRF.
@@ -295,7 +345,8 @@ class HybridRetriever:
             top_k: 返回结果数
             alpha: 向量权重 (None = 使用默认)
                    1.0 = 纯向量, 0.0 = 纯关键词
-            chunk_type: 过滤 chunk_type (如 "command")
+            chunk_type: 过滤 chunk_type (如 "command", "resource")
+            doc_type: 过滤文档类型 (如 "ipmi", "redfish")
 
         Returns:
             [{"id", "document", "metadata", "score"}]
@@ -306,12 +357,14 @@ class HybridRetriever:
         # 向量检索
         vector_ranks: List[Tuple[int, float]] = []
         if query_embedding is not None and a > 0:
-            vector_ranks = self._vector_search(query_embedding, expand, chunk_type)
+            vector_ranks = self._vector_search(
+                query_embedding, expand, chunk_type, doc_type
+            )
 
         # BM25 关键词检索
         keyword_ranks: List[Tuple[int, float]] = []
         if a < 1.0:
-            keyword_ranks = self._bm25_search(query, expand, chunk_type)
+            keyword_ranks = self._bm25_search(query, expand, chunk_type, doc_type)
 
         # 融合
         if vector_ranks and keyword_ranks:
@@ -381,6 +434,7 @@ class HybridRetriever:
         top_k: int = 5,
         alpha: Optional[float] = None,
         chunk_type: Optional[str] = None,
+        doc_type: Optional[str] = None,
         rewrite_top_k: int = 5,
     ) -> List[Dict[str, Any]]:
         """
@@ -398,6 +452,7 @@ class HybridRetriever:
             top_k: 最终返回结果数
             alpha: 向量权重 (None = 使用默认)
             chunk_type: 过滤 chunk_type
+            doc_type: 按文档类型过滤 (如 "ipmi", "redfish")
             rewrite_top_k: Query Rewriter 生成查询条数
 
         Returns:
@@ -406,7 +461,7 @@ class HybridRetriever:
         if self.rewriter is None:
             # Rewriter 未启用，降级为普通 search
             logger.warning("Query Rewriter 未启用，降级为普通 search")
-            return self.search(query, query_embedding, top_k, alpha, chunk_type)
+            return self.search(query, query_embedding, top_k, alpha, chunk_type, doc_type)
 
         # Step 1: 查询扩展
         rewritten_queries = await self.rewriter.rewrite(query, top_k=rewrite_top_k)
@@ -421,7 +476,9 @@ class HybridRetriever:
             # 改写查询: 使用 BM25 检索 (不需要 embedding)
             # 原始查询: 使用混合检索 (如果有 embedding)
             if rq == query and query_embedding is not None:
-                results = self.search(rq, query_embedding, expand_k, alpha, chunk_type)
+                results = self.search(
+                    rq, query_embedding, expand_k, alpha, chunk_type, doc_type
+                )
                 ranks = [
                     (self.id_to_idx[r["id"]], r["score"])
                     for r in results
@@ -431,7 +488,7 @@ class HybridRetriever:
                 # 改写查询只用 BM25 (没有对应 embedding)
                 a = alpha if alpha is not None else self.alpha
                 if a < 1.0:
-                    ranks = self._bm25_search(rq, expand_k, chunk_type)
+                    ranks = self._bm25_search(rq, expand_k, chunk_type, doc_type)
                 else:
                     ranks = []
 
