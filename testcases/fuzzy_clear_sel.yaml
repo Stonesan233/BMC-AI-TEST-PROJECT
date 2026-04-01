@@ -1,27 +1,28 @@
-# openUBMC 测试用例 - 模糊场景：清除系统事件日志 SEL
-# 本用例不提供具体命令，依赖 RAG 检索推荐
+# openUBMC 测试用例 - 模糊场景：清除系统事件日志
+# 特点：只说"把日志清了"，不提供 Clear SEL 的 NetFn/Cmd
+# RAG 职责：将"查看日志数量"映射到 Get SEL Info，将"清掉全部日志"映射到 Clear SEL
+#          并提供注意事项（清除后等待短暂时间再查询）
 
 用例_编号: "TC-FUZZY-005"
-用例_名称: "清除 BMC 系统事件日志"
+用例_名称: "查看并清除 BMC 系统事件日志"
 测试类型: "功能测试"
 优先级: "P2"
 
 预置条件:
-  - BMC 网络可达（IPMI 端口默认 623）
-  - IPMI 认证正常（Administrator 账户可用）
-  - 系统事件日志中存在若干条目
+  - BMC 网络可达（IPMI 端口 10623）
+  - IPMI 认证正常（Administrator / Admin@90000）
+  - 系统事件日志中存在若干条目（SEL 非空）
 
 测试步骤:
   - step_id: "step_001"
-    description: "先查看一下系统里记录了多少事件日志"
+    description: "看一下系统里存了多少条事件日志"
     interface_preference: "ipmi"
     expected:
       success: true
-      result_contains:
-        - "entry"
+      result_not_empty: true
 
   - step_id: "step_002"
-    description: "把所有系统事件日志全部清掉"
+    description: "把所有事件日志全部清掉"
     interface_preference: "ipmi"
     expected:
       success: true
@@ -29,16 +30,22 @@
   - step_id: "step_003"
     description: "确认日志已经被清空了"
     interface_preference: "ipmi"
+    notes: "某些 BMC 实现清除 SEL 后需要等待 1~2 秒再查询"
     expected:
       success: true
       result_field:
         entry_count: 0
 
 预期结果:
-  - 能查询系统事件日志信息
-  - 日志清除操作成功
-  - 清除后确认日志已为空
+  - step_001: 成功查询 SEL 信息，返回日志条目数大于 0
+  - step_002: 日志清除操作成功，返回 completion_code = 0x00
+  - step_003: 清除后再次查询，确认日志条目数为 0
+  - 环境恢复: SEL 日志已被清空（无需额外恢复）
 
 注意事项:
-  - 清除日志前建议确认无需保留的历史记录
-  - 某些 BMC 实现清除 SEL 后需等待短暂时间再查询
+  - 清除 SEL 属于不可逆操作，测试前应确认无需保留的历史日志
+  - 清除后部分 BMC 需要短暂延迟才能正确返回空状态
+  - 如果清除后查询仍有残余条目，可能是 BMC 内部异步处理延迟，等待后重试
+
+清理步骤:
+  - 无需额外清理（SEL 清除即为最终状态）

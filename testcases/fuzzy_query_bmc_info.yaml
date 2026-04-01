@@ -1,18 +1,20 @@
 # openUBMC 测试用例 - 模糊场景：查询 BMC 基本信息
-# 本用例不提供具体命令，依赖 RAG 检索推荐
+# 特点：只给出"我要了解设备信息"的模糊意图，不提供任何具体命令或 NetFn/Cmd
+# RAG 职责：将"设备身份信息"映射到 Get Device ID，将"固件版本"映射到 Get Device GUID / Get BMC System Info
 
 用例_编号: "TC-FUZZY-001"
-用例_名称: "查询 BMC 设备基本信息"
+用例_名称: "查看服务器管理模块的基本身份和版本信息"
 测试类型: "功能测试"
 优先级: "P2"
 
 预置条件:
-  - BMC 网络可达（IPMI 端口默认 623）
-  - IPMI 认证正常（Administrator 账户可用）
+  - BMC 网络可达（IPMI 端口 10623）
+  - IPMI 认证正常（Administrator / Admin@90000）
+  - BMC 固件已正常加载（非升级中状态）
 
 测试步骤:
   - step_id: "step_001"
-    description: "了解当前 BMC 的设备身份信息，包括设备制造商、产品型号和序列号等"
+    description: "我想知道这台服务器的管理模块是哪家厂商生产的、具体型号是什么"
     interface_preference: "ipmi"
     expected:
       success: true
@@ -21,7 +23,7 @@
         - "product"
 
   - step_id: "step_002"
-    description: "获取 BMC 固件版本信息，确认当前运行的软件版本"
+    description: "确认一下管理模块当前运行的软件版本号"
     interface_preference: "ipmi"
     expected:
       success: true
@@ -30,13 +32,17 @@
         - "firmware"
 
   - step_id: "step_003"
-    description: "查看 BMC 的全局唯一标识符"
+    description: "查一下管理模块的全局唯一标识"
     interface_preference: "ipmi"
     expected:
       success: true
+      result_not_empty: true
 
 预期结果:
-  - 能够获取 BMC 设备制造商和产品信息
-  - 能够获取 BMC 固件版本号
-  - 能够获取 BMC 的 GUID 信息
-  - 所有查询操作均成功返回
+  - step_001: 能正确返回设备制造商和产品型号信息，manufacturer 字段非空
+  - step_002: 能正确返回 BMC 固件版本号，version 字段非空
+  - step_003: 能正确返回 BMC GUID，返回值不为空
+  - 所有操作返回成功状态（completion_code = 0x00）
+
+清理步骤:
+  - 无需清理（只读操作）

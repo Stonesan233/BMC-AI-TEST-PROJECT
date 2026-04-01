@@ -1,19 +1,22 @@
-# openUBMC 测试用例 - 模糊场景：添加新 IPMI 用户（带密码交互）
-# 本用例不提供具体命令，依赖 RAG 检索推荐
+# openUBMC 测试用例 - 模糊场景：通过命令行添加新 IPMI 用户
+# 特点：只说"新增一个用户"，不提供具体 CLI 命令、参数或交互流程
+# RAG 职责：将"命令行新增用户"映射到 ipmcraw NetFn=0x06 的用户管理命令序列
+#          或 CLI 的 usersmart 命令，并提供密码交互式输入的注意事项
 
 用例_编号: "TC-FUZZY-002"
-用例_名称: "通过命令行新增一个管理用户"
+用例_名称: "通过命令行新增一个管理用户并验证"
 测试类型: "功能测试"
 优先级: "P1"
 
 预置条件:
-  - BMC SSH 接口可达（默认端口 10022）
-  - SSH 认证正常（Administrator 账户可用）
-  - 当前用户数未达上限（最多 15 个，排除 ID=2 的 Administrator）
+  - BMC SSH 接口可达（端口 10022）
+  - SSH 认证正常（Administrator / Admin@90000）
+  - 当前用户数未达上限（排除 ID=2 的 Administrator 后不超过 14 个）
+  - 测试用户 fuzzy_testuser 不已存在（如存在则先删除）
 
 测试步骤:
   - step_id: "step_001"
-    description: "先看看系统里现在有多少用户，确认还有空位可以新增"
+    description: "看一下现在系统里有几个用户"
     interface_preference: "cli"
     expected:
       success: true
@@ -21,26 +24,44 @@
         - "Administrator"
 
   - step_id: "step_002"
-    description: "新增一个叫 testuser_fuzzy 的用户，需要设置密码并确认"
+    description: "新增一个叫 fuzzy_testuser 的用户"
     interface_preference: "cli"
-    notes: "该步骤需要交互式输入密码，请依次输入当前用户密码、新用户密码、确认密码"
+    notes: "创建用户可能涉及交互式密码输入，请依次完成当前用户密码验证、新用户密码设置、密码确认"
     expected:
       success: true
       result_contains:
         - "success"
 
   - step_id: "step_003"
-    description: "确认刚才创建的用户已经在用户列表中了"
+    description: "确认这个用户已经在列表里了"
     interface_preference: "cli"
     expected:
       success: true
       result_contains:
-        - "testuser_fuzzy"
+        - "fuzzy_testuser"
+
+  - step_id: "step_004"
+    description: "把刚才创建的测试用户删掉，恢复环境"
+    interface_preference: "cli"
+    expected:
+      success: true
+
+  - step_id: "step_005"
+    description: "再查一次用户列表，确认测试用户已经被删掉了"
+    interface_preference: "cli"
+    expected:
+      success: true
+      result_not_contains:
+        - "fuzzy_testuser"
 
 预期结果:
-  - 用户列表查询成功
-  - 新用户创建成功
-  - 新用户 testuser_fuzzy 出现在用户列表中
+  - step_001: 用户列表查询成功，包含 Administrator 账户
+  - step_002: 新用户 fuzzy_testuser 创建成功
+  - step_003: 用户列表中出现 fuzzy_testuser
+  - step_004: 测试用户删除成功
+  - step_005: 用户列表中不再包含 fuzzy_testuser
+  - 环境恢复: 最终用户列表与测试前一致
 
 清理步骤:
-  - 删除测试用户 testuser_fuzzy
+  - 确保测试用户 fuzzy_testuser 已被删除
+  - 如果删除失败，在执行记录中标注"环境未完全恢复"

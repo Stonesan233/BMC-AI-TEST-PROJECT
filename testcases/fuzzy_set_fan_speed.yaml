@@ -1,19 +1,22 @@
-# openUBMC 测试用例 - 模糊场景：设置风扇转速策略
-# 本用例不提供具体命令，依赖 RAG 检索推荐
+# openUBMC 测试用例 - 模糊场景：调整风扇运行策略
+# 特点：只说"控制风扇转速"，不提供 NetFn/Cmd 或具体参数值
+# RAG 职责：将"风扇模式切换"映射到 Set Fan Mode，将"设定转速"映射到 Set Fan Speed
+#          并提供模式参数（自动/手动）和转速百分比的正确取值范围
 
 用例_编号: "TC-FUZZY-003"
-用例_名称: "调整风扇运行模式并控制转速"
+用例_名称: "调整风扇运行模式并设定目标转速"
 测试类型: "功能测试"
 优先级: "P2"
 
 预置条件:
-  - BMC 网络可达（IPMI 端口默认 623）
-  - IPMI 认证正常（Administrator 账户可用）
+  - BMC 网络可达（IPMI 端口 10623）
+  - IPMI 认证正常（Administrator / Admin@90000）
   - 风扇硬件正常工作
+  - 当前风扇处于自动模式（测试结束后必须恢复）
 
 测试步骤:
   - step_id: "step_001"
-    description: "查看当前风扇的工作状态和转速读数"
+    description: "看一眼风扇现在跑得怎么样"
     interface_preference: "ipmi"
     expected:
       success: true
@@ -21,28 +24,37 @@
         - "fan"
 
   - step_id: "step_002"
-    description: "把风扇切换到手动控制模式，以便设定具体转速"
+    description: "把风扇从自动调节改成手动控制"
     interface_preference: "ipmi"
     expected:
       success: true
 
   - step_id: "step_003"
-    description: "将风扇转速设定为一个固定值（比如 30%）"
+    description: "给风扇设一个固定转速，大概百分之三十"
     interface_preference: "ipmi"
     expected:
       success: true
 
   - step_id: "step_004"
-    description: "把风扇恢复到自动调节模式"
+    description: "改回自动模式"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+
+  - step_id: "step_005"
+    description: "确认风扇已经回到自动调节了"
     interface_preference: "ipmi"
     expected:
       success: true
 
 预期结果:
-  - 能查询当前风扇状态和转速
-  - 风扇模式切换为手动模式成功
-  - 风扇转速设定成功
-  - 风扇恢复自动模式成功
+  - step_001: 成功查询风扇状态和当前转速读数
+  - step_002: 风扇模式切换为手动模式成功，返回 completion_code = 0x00
+  - step_003: 风扇转速设定成功，设定值接近 30%
+  - step_004: 风扇恢复自动模式成功，返回 completion_code = 0x00
+  - step_005: 确认风扇已恢复自动模式
+  - 环境恢复: 风扇最终必须处于自动模式
 
 清理步骤:
-  - 确保风扇恢复为自动模式（避免硬件过热风险）
+  - 确保风扇恢复为自动调节模式（避免硬件过热风险）
+  - 如果未成功恢复，在执行记录中标注"环境未完全恢复：风扇仍处于手动模式"

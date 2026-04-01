@@ -1,33 +1,38 @@
 # openUBMC 测试用例 - 模糊场景：远程控制服务器上下电
-# 本用例不提供具体命令，依赖 RAG 检索推荐
+# 特点：只说"把服务器关了再开"，不提供 Chassis Power Control 的 NetFn/Cmd 和参数值
+# RAG 职责：将"查看电源状态"映射到 Get Chassis Status，将"关机/开机"映射到
+#          Chassis Power Control 并提供正确参数（0x00=off, 0x01=on）
 
 用例_编号: "TC-FUZZY-004"
-用例_名称: "远程控制服务器开机和关机"
+用例_名称: "远程控制服务器关机再开机"
 测试类型: "功能测试"
 优先级: "P1"
 
 预置条件:
-  - BMC 网络可达（IPMI 端口默认 623）
-  - IPMI 认证正常（Administrator 账户可用）
+  - BMC 网络可达（IPMI 端口 10623）
+  - IPMI 认证正常（Administrator / Admin@90000）
   - 服务器当前处于开机状态
+  - BMC 管理模块正常运行（BMC 不受主机上下电影响）
 
 测试步骤:
   - step_id: "step_001"
-    description: "先看一下服务器当前是开着还是关着"
+    description: "看看服务器现在是开着还是关着"
     interface_preference: "ipmi"
     expected:
       success: true
       result_contains:
         - "power"
+      result_field:
+        power_state: "On"
 
   - step_id: "step_002"
-    description: "把服务器远程关机"
+    description: "远程把服务器关掉"
     interface_preference: "ipmi"
     expected:
       success: true
 
   - step_id: "step_003"
-    description: "确认服务器确实已经关掉了"
+    description: "等几秒钟确认服务器确实已经关了"
     interface_preference: "ipmi"
     expected:
       success: true
@@ -35,13 +40,13 @@
         power_state: "Off"
 
   - step_id: "step_004"
-    description: "把服务器重新开机"
+    description: "把服务器重新开起来"
     interface_preference: "ipmi"
     expected:
       success: true
 
   - step_id: "step_005"
-    description: "确认服务器已经成功启动"
+    description: "确认服务器已经正常启动"
     interface_preference: "ipmi"
     expected:
       success: true
@@ -49,11 +54,13 @@
         power_state: "On"
 
 预期结果:
-  - 能查询当前电源状态
-  - 远程关机操作成功
-  - 关机后电源状态确认为 Off
-  - 远程开机操作成功
-  - 开机后电源状态确认为 On
+  - step_001: 成功查询当前电源状态为 On
+  - step_002: 远程关机命令发送成功
+  - step_003: 关机后电源状态确认为 Off
+  - step_004: 远程开机命令发送成功
+  - step_005: 开机后电源状态确认为 On
+  - 环境恢复: 服务器最终处于开机状态
 
 清理步骤:
   - 确保服务器最终处于开机状态
+  - 如果开机失败，在执行记录中标注"环境未恢复：服务器仍处于关机状态"

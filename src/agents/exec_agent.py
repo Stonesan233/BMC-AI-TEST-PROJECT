@@ -514,19 +514,26 @@ class ExecAgent:
         )
 
         # RAG 混合检索器 (HybridRetriever + QueryRewriter)
-        rag_cfg = config.get("agent", {}).get("rag", {})
+        rag_cfg = config.get("rag", {})
         self._rag_enabled = rag_cfg.get("enabled", False)
         self._retriever: Optional[HybridRetriever] = None
         self._embed_client: Optional[AsyncOpenAI] = None
         self._embed_http_client: Optional[httpx.AsyncClient] = None
         self._embed_model = rag_cfg.get("embedding_model", "text-embedding-v4")
         self._embed_dimension = rag_cfg.get("embedding_dimension", 1024)
-        self._rag_top_k = rag_cfg.get("top_k", 5)
+        self._rag_top_k = int(rag_cfg.get("top_k", 3))
+        self._rag_rewrite_enabled = rag_cfg.get("enable_rewrite", True)
+        self._rag_rewrite_model = rag_cfg.get("rewrite_model", "qwen3.5-plus")
+        self._rag_rewrite_weight = float(rag_cfg.get("rewrite_weight", 2.0))
 
         if self._rag_enabled:
             try:
                 self._init_rag(rag_cfg)
-                logger.info("RAG 模块已启用 (HybridRetriever + QueryRewriter)")
+                logger.info(
+                    f"RAG 模块已启用 | top_k={self._rag_top_k} | "
+                    f"rewrite={'on' if self._rag_rewrite_enabled else 'off'} | "
+                    f"rewrite_weight={self._rag_rewrite_weight}"
+                )
             except Exception as e:
                 logger.warning(f"RAG 初始化失败，已禁用: {e}")
                 self._rag_enabled = False
@@ -601,23 +608,17 @@ class ExecAgent:
 
     def _init_rag(self, rag_cfg: dict) -> None:
         """初始化 RAG 混合检索器和 Embedding 客户端。"""
-        # Chroma 路径（兼容旧配置 key）
-        chroma_path = rag_cfg.get(
-            "chroma_path",
-            rag_cfg.get("knowledge_base_path", "./shared/rag_index"),
-        )
+        chroma_path = rag_cfg.get("chroma_path", "./shared/rag_index")
         collection_name = rag_cfg.get("collection_name", "openubmc_rag")
         alpha = float(rag_cfg.get("alpha", 0.7))
-        enable_rewrite = rag_cfg.get("enable_rewrite", True)
-        rewrite_model = rag_cfg.get("rewrite_model", "qwen3.5-plus")
 
         # HybridRetriever（内部集成 QueryRewriter）
         self._retriever = HybridRetriever(
             chroma_path=chroma_path,
             collection_name=collection_name,
             alpha=alpha,
-            enable_rewrite=enable_rewrite,
-            rewrite_model=rewrite_model,
+            enable_rewrite=self._rag_rewrite_enabled,
+            rewrite_model=self._rag_rewrite_model,
         )
 
         # Embedding 客户端（DashScope 兼容 API）
@@ -636,9 +637,10 @@ class ExecAgent:
         )
 
         logger.info(
-            f"RAG 配置: chroma={chroma_path}, collection={collection_name}, "
-            f"alpha={alpha}, rewrite={'on' if enable_rewrite else 'off'} "
-            f"(model={rewrite_model}), embed={self._embed_model}"
+            f"RAG 初始化完成: chroma={chroma_path}, collection={collection_name}, "
+            f"alpha={alpha}, embed_model={self._embed_model}, "
+            f"rewrite={'on' if self._rag_rewrite_enabled else 'off'} "
+            f"(model={self._rag_rewrite_model}, weight={self._rag_rewrite_weight})"
         )
 
     def _resolve_api_key(self, key_raw: str) -> str:
@@ -1407,69 +1409,101 @@ class ExecAgent:
         1. 接收模糊操作描述
         2. 生成查询向量（DashScope Embedding）
         3. 调用 search_with_rewrite 进行混合检索 + 查询改写
-        4. 格式化返回结果供 LLM 使用
-        """
-        operation = args.get("operation_description", "")
-        hint = args.get("interface_hint", "any")
-        top_k = args.get("top_k", self._rag_top_k)
+        4. 格式化返回结构化结果供 LLM 使用
 
-        if not operation.strip():
+        容错: RAG 不可用时优雅降级为关键词匹配，不阻塞执行流程。
+        """
+        operation = args.get("operation_description", "").strip()
+        hint = args.get("interface_hint", "any")
+        top_k = int(args.get("top_k", self._rag_top_k))
+
+        # ---- 参数校验 ----
+        if not operation:
+            logger.warning("[RAG] 收到空查询，跳过")
             return json.dumps(
-                {"error": "operation_description 不能为空"},
+                {"error": "operation_description 不能为空", "results": []},
                 ensure_ascii=False,
             )
 
-        logger.info(f"[RAG] 原始查询: '{operation}' | hint={hint} | top_k={top_k}")
+        logger.info(f"[RAG] === 开始检索 ===")
+        logger.info(f"[RAG] 原始查询: '{operation}'")
+        logger.info(f"[RAG] 参数: hint={hint}, top_k={top_k}")
 
-        # RAG 未启用时降级为关键词匹配
+        # ---- RAG 未启用: 降级为关键词匹配 ----
         if not self._rag_enabled or not self._retriever:
-            logger.warning("[RAG] 未启用，降级为关键词匹配")
+            logger.warning("[RAG] RAG 未启用或初始化失败，降级为关键词匹配")
             return self._rag_fallback_keyword(operation, hint)
 
-        # Step 1: 生成查询向量
-        query_embedding = await self._get_query_embedding(operation)
-        if query_embedding:
-            logger.debug(f"[RAG] Embedding 生成成功 (dim={len(query_embedding)})")
-        else:
-            logger.warning("[RAG] Embedding 生成失败，仅使用 BM25 检索")
+        # ---- Step 1: 生成查询向量 ----
+        query_embedding = None
+        try:
+            query_embedding = await self._get_query_embedding(operation)
+            if query_embedding:
+                logger.info(f"[RAG] Embedding 生成成功 (dim={len(query_embedding)})")
+            else:
+                logger.warning("[RAG] Embedding 返回为空，将仅使用 BM25 检索")
+        except Exception as e:
+            logger.warning(f"[RAG] Embedding 生成异常: {e}，将仅使用 BM25 检索")
 
-        # Step 2: 混合检索 + 查询改写
+        # ---- Step 2: 混合检索 + 查询改写 ----
         try:
             results = await self._retriever.search_with_rewrite(
                 query=operation,
                 query_embedding=query_embedding,
                 top_k=top_k,
-                chunk_type="command",  # 优先检索命令类型 chunk
+                chunk_type="command",
             )
         except Exception as e:
-            logger.error(f"[RAG] 检索失败: {e}")
-            return json.dumps(
-                {
-                    "error": f"RAG 检索失败: {e}",
-                    "operation_description": operation,
-                },
-                ensure_ascii=False,
-            )
+            logger.error(f"[RAG] 检索异常: {type(e).__name__}: {e}")
+            logger.info("[RAG] 降级为关键词匹配")
+            return self._rag_fallback_keyword(operation, hint)
 
-        # Step 3: 日志记录
-        logger.info(f"[RAG] 检索完成，返回 {len(results)} 条结果")
-        for i, r in enumerate(results[:3]):
+        # ---- Step 3: 详细日志 ----
+        logger.info(f"[RAG] 检索完成，共 {len(results)} 条结果")
+        if not results:
+            logger.warning("[RAG] 未检索到任何结果，请检查知识库是否已构建")
+        for i, r in enumerate(results[:3], 1):
             meta = r.get("metadata", {})
             score = r.get("score", 0)
-            cmd_name = meta.get("command_name", "unknown")
-            netfn = meta.get("netfn", "")
+            section = meta.get("section", "-")
+            cmd_name = meta.get("command_name", "-")
+            netfn = meta.get("netfn", "-")
+            cmd = meta.get("cmd", "-")
+            desc = meta.get("description", "")
             logger.info(
-                f"  [{i + 1}] score={score:.4f} | command={cmd_name} | "
-                f"netfn={netfn} | desc={meta.get('description', '')[:60]}"
+                f"[RAG]   [{i}] score={score:.4f} | section={section} | "
+                f"command={cmd_name} | NetFn={netfn}, Cmd={cmd}"
             )
+            if desc:
+                logger.debug(f"[RAG]       desc={desc[:80]}")
 
-        # Step 4: 格式化结果
+        # ---- Step 4: 格式化并返回 ----
         return self._format_rag_results(operation, results, hint)
 
     def _format_rag_results(
         self, operation: str, results: List[Dict[str, Any]], hint: str
     ) -> str:
-        """格式化 RAG 检索结果，提取关键信息供 LLM 使用。"""
+        """
+        格式化 RAG 检索结果为结构化字符串，便于 LLM 直接使用。
+
+        输出格式设计原则:
+        - 每条结果包含: section/command/netfn+cmd/score/notes
+        - document_snippet 截断到 500 字符，避免过长
+        - 无结果时返回明确提示
+        """
+        if not results:
+            return json.dumps(
+                {
+                    "operation_description": operation,
+                    "total_matches": 0,
+                    "results": [],
+                    "hint": "RAG 未检索到匹配命令，请根据操作描述自行推测命令，"
+                            "或尝试使用更具体的关键词重新调用 bmc_command_rag",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+
         formatted_items = []
         for i, r in enumerate(results):
             meta = r.get("metadata", {})
