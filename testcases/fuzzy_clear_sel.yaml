@@ -1,0 +1,44 @@
+# openUBMC 测试用例 - 模糊场景：清除系统事件日志 SEL
+# 本用例不提供具体命令，依赖 RAG 检索推荐
+
+用例_编号: "TC-FUZZY-005"
+用例_名称: "清除 BMC 系统事件日志"
+测试类型: "功能测试"
+优先级: "P2"
+
+预置条件:
+  - BMC 网络可达（IPMI 端口默认 623）
+  - IPMI 认证正常（Administrator 账户可用）
+  - 系统事件日志中存在若干条目
+
+测试步骤:
+  - step_id: "step_001"
+    description: "先查看一下系统里记录了多少事件日志"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+      result_contains:
+        - "entry"
+
+  - step_id: "step_002"
+    description: "把所有系统事件日志全部清掉"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+
+  - step_id: "step_003"
+    description: "确认日志已经被清空了"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+      result_field:
+        entry_count: 0
+
+预期结果:
+  - 能查询系统事件日志信息
+  - 日志清除操作成功
+  - 清除后确认日志已为空
+
+注意事项:
+  - 清除日志前建议确认无需保留的历史记录
+  - 某些 BMC 实现清除 SEL 后需等待短暂时间再查询

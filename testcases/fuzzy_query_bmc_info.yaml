@@ -1,0 +1,42 @@
+# openUBMC 测试用例 - 模糊场景：查询 BMC 基本信息
+# 本用例不提供具体命令，依赖 RAG 检索推荐
+
+用例_编号: "TC-FUZZY-001"
+用例_名称: "查询 BMC 设备基本信息"
+测试类型: "功能测试"
+优先级: "P2"
+
+预置条件:
+  - BMC 网络可达（IPMI 端口默认 623）
+  - IPMI 认证正常（Administrator 账户可用）
+
+测试步骤:
+  - step_id: "step_001"
+    description: "了解当前 BMC 的设备身份信息，包括设备制造商、产品型号和序列号等"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+      result_contains:
+        - "manufacturer"
+        - "product"
+
+  - step_id: "step_002"
+    description: "获取 BMC 固件版本信息，确认当前运行的软件版本"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+      result_contains:
+        - "version"
+        - "firmware"
+
+  - step_id: "step_003"
+    description: "查看 BMC 的全局唯一标识符"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+
+预期结果:
+  - 能够获取 BMC 设备制造商和产品信息
+  - 能够获取 BMC 固件版本号
+  - 能够获取 BMC 的 GUID 信息
+  - 所有查询操作均成功返回

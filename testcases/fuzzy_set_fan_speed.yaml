@@ -1,0 +1,48 @@
+# openUBMC 测试用例 - 模糊场景：设置风扇转速策略
+# 本用例不提供具体命令，依赖 RAG 检索推荐
+
+用例_编号: "TC-FUZZY-003"
+用例_名称: "调整风扇运行模式并控制转速"
+测试类型: "功能测试"
+优先级: "P2"
+
+预置条件:
+  - BMC 网络可达（IPMI 端口默认 623）
+  - IPMI 认证正常（Administrator 账户可用）
+  - 风扇硬件正常工作
+
+测试步骤:
+  - step_id: "step_001"
+    description: "查看当前风扇的工作状态和转速读数"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+      result_contains:
+        - "fan"
+
+  - step_id: "step_002"
+    description: "把风扇切换到手动控制模式，以便设定具体转速"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+
+  - step_id: "step_003"
+    description: "将风扇转速设定为一个固定值（比如 30%）"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+
+  - step_id: "step_004"
+    description: "把风扇恢复到自动调节模式"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+
+预期结果:
+  - 能查询当前风扇状态和转速
+  - 风扇模式切换为手动模式成功
+  - 风扇转速设定成功
+  - 风扇恢复自动模式成功
+
+清理步骤:
+  - 确保风扇恢复为自动模式（避免硬件过热风险）

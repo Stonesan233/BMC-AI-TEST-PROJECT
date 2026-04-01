@@ -86,9 +86,33 @@ steps 中每个元素的关键字段：
    - method: GET / POST / PATCH / DELETE
    - body: 请求体（可选，POST/PATCH 时使用）
 
-2. **ipmi_command**：执行 IPMI 命令
-   - command: IPMI 命令字符串
+2. **ipmi_command**：执行 IPMI 命令（pyghmi 后端，非 ipmitool CLI）
+   - command: IPMI 子命令字符串（**不要加 `ipmi` 或 `ipmitool` 前缀**）
    - timeout: 超时秒数（可选，默认 30）
+
+   支持的命令白名单：
+   | 命令 | 功能 | 示例 |
+   |------|------|------|
+   | mc info | 获取设备信息（制造商、固件版本） | `mc info` |
+   | mc guid | 获取系统 GUID | `mc guid` |
+   | mc reset cold/warm | BMC 冷/热复位 | `mc reset cold` |
+   | chassis status | 获取机箱状态 | `chassis status` |
+   | chassis power status | 查询电源状态 | `chassis power status` |
+   | chassis power on/off/cycle/reset | 电源控制 | `chassis power on` |
+   | sel info | SEL 日志信息 | `sel info` |
+   | sel list | 列出 SEL 条目 | `sel list` |
+   | sdr info | SDR 信息 | `sdr info` |
+   | sdr list | 列出 SDR | `sdr list` |
+   | sensor list | 列出传感器读数 | `sensor list` |
+   | fru list | FRU 信息 | `fru list` |
+   | user list | 列出用户 | `user list` |
+   | user summary | 用户摘要 | `user summary` |
+   | raw 0xNN 0xMM | 原始 IPMI 命令 | `raw 0x06 0x01` |
+
+   **禁止使用的格式**：
+   - ~~`ipmi chassis status`~~（错误：多了 ipmi 前缀）
+   - ~~`ipmitool mc info`~~（错误：多了 ipmitool 前缀）
+   - ~~`ipmi fru print`~~（错误：fru print 不支持，用 `fru list`）
 
 3. **ssh_exec**：通过 SSH 执行单条命令（非交互式）
    - command: 要执行的命令

@@ -1,0 +1,59 @@
+# openUBMC 测试用例 - 模糊场景：远程控制服务器上下电
+# 本用例不提供具体命令，依赖 RAG 检索推荐
+
+用例_编号: "TC-FUZZY-004"
+用例_名称: "远程控制服务器开机和关机"
+测试类型: "功能测试"
+优先级: "P1"
+
+预置条件:
+  - BMC 网络可达（IPMI 端口默认 623）
+  - IPMI 认证正常（Administrator 账户可用）
+  - 服务器当前处于开机状态
+
+测试步骤:
+  - step_id: "step_001"
+    description: "先看一下服务器当前是开着还是关着"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+      result_contains:
+        - "power"
+
+  - step_id: "step_002"
+    description: "把服务器远程关机"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+
+  - step_id: "step_003"
+    description: "确认服务器确实已经关掉了"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+      result_field:
+        power_state: "Off"
+
+  - step_id: "step_004"
+    description: "把服务器重新开机"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+
+  - step_id: "step_005"
+    description: "确认服务器已经成功启动"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+      result_field:
+        power_state: "On"
+
+预期结果:
+  - 能查询当前电源状态
+  - 远程关机操作成功
+  - 关机后电源状态确认为 Off
+  - 远程开机操作成功
+  - 开机后电源状态确认为 On
+
+清理步骤:
+  - 确保服务器最终处于开机状态

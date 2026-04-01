@@ -154,6 +154,12 @@ class IPMITool:
         """同步执行 IPMI 命令（在工作线程中运行）"""
         conn = self._connect()
         cmd = command_str.strip()
+        # 兼容业界习惯：自动去除 ipmitool / ipmi 前缀
+        # LLM 经常生成 "ipmi chassis status" 或 "ipmitool mc info"
+        if cmd.lower().startswith("ipmitool "):
+            cmd = cmd[len("ipmitool "):].strip()
+        elif cmd.lower().startswith("ipmi "):
+            cmd = cmd[len("ipmi "):].strip()
         cmd_lower = cmd.lower()
 
         # 命令路由

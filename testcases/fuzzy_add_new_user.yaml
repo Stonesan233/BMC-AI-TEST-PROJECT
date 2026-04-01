@@ -1,0 +1,46 @@
+# openUBMC 测试用例 - 模糊场景：添加新 IPMI 用户（带密码交互）
+# 本用例不提供具体命令，依赖 RAG 检索推荐
+
+用例_编号: "TC-FUZZY-002"
+用例_名称: "通过命令行新增一个管理用户"
+测试类型: "功能测试"
+优先级: "P1"
+
+预置条件:
+  - BMC SSH 接口可达（默认端口 10022）
+  - SSH 认证正常（Administrator 账户可用）
+  - 当前用户数未达上限（最多 15 个，排除 ID=2 的 Administrator）
+
+测试步骤:
+  - step_id: "step_001"
+    description: "先看看系统里现在有多少用户，确认还有空位可以新增"
+    interface_preference: "cli"
+    expected:
+      success: true
+      result_contains:
+        - "Administrator"
+
+  - step_id: "step_002"
+    description: "新增一个叫 testuser_fuzzy 的用户，需要设置密码并确认"
+    interface_preference: "cli"
+    notes: "该步骤需要交互式输入密码，请依次输入当前用户密码、新用户密码、确认密码"
+    expected:
+      success: true
+      result_contains:
+        - "success"
+
+  - step_id: "step_003"
+    description: "确认刚才创建的用户已经在用户列表中了"
+    interface_preference: "cli"
+    expected:
+      success: true
+      result_contains:
+        - "testuser_fuzzy"
+
+预期结果:
+  - 用户列表查询成功
+  - 新用户创建成功
+  - 新用户 testuser_fuzzy 出现在用户列表中
+
+清理步骤:
+  - 删除测试用户 testuser_fuzzy

@@ -3,9 +3,9 @@
 # Agent 配置
 agents:
   exec:
-    base_url: "https://open.bigmodel.cn/api/paas/v4"
-    api_key: "${GLM_API_KEY}"
-    model: "glm-5"
+    base_url: "https://api.minimax.chat/v1"
+    api_key: "${MINIMAX_API_KEY}"
+    model: "MiniMax-M2.5"
     temperature: 0.1
     max_tokens: 8192
   judge:
@@ -20,16 +20,29 @@ agent:
   judge_batch_size: 1  # Judge Agent 批量大小 (固定为 1)
   rag:
     enabled: true
-    knowledge_base_path: "./knowledge_base"
+    chroma_path: "./shared/rag_index"
+    collection_name: "openubmc_rag"
+    alpha: 0.7                 # 向量检索权重 (0.0~1.0), BM25 权重 = 1-alpha
+    enable_rewrite: true       # 启用 Query Rewriting
+    rewrite_model: "qwen3.5-plus"  # 改写模型 (DashScope 兼容)
+    embedding_api_key: "${DASHSCOPE_API_KEY}"
+    embedding_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    embedding_model: "text-embedding-v4"
+    embedding_dimension: 1024
+    top_k: 5
 
 # 目标 BMC 配置
+# QEMU 跑在 WSL(172.23.17.208) 里，TCP 端口转发到 Windows 127.0.0.1
+# IPMI(UDP) 只能从 WSL 网段访问，Redfish/SSH(TCP) 转发到 127.0.0.1
 target:
-  bmc_host: "127.0.0.1"
+  bmc_host: "127.0.0.1"           # Redfish / SSH
   bmc_port: 10443
+  ipmi_host: "172.23.17.208"      # IPMI (UDP, WSL 网段)
   ipmi_port: 10623
+  ssh_host: "127.0.0.1"           # SSH (TCP, 转发到 Windows)
   ssh_port: 10022
   bmc_user: "Administrator"
-  bmc_password: "your_password"
+  bmc_password: "Admin@90000"
   # os_host: "192.168.1.101"    # 可选：主机控制台
   # os_user: "root"
   # os_password: "your_password"
