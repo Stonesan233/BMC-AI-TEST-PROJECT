@@ -1,0 +1,75 @@
+# openUBMC 测试用例 - 模糊场景：通过 Redfish 查询系统信息和控制电源
+# 特点：只给出模糊意图，如"查看电源状态"、"重启服务器"，不提供具体 Redfish URI 或请求格式
+# RAG 职责：将"查询电源状态"映射到 GET /redfish/v1/Systems/{SystemId}，
+#          将"重启系统"映射到 POST .../Actions/ComputerSystem.Reset，
+#          提供 JSON 请求体模板和响应字段说明
+
+用例_编号: "TC-FUZZY-RED-001"
+用例_名称: "通过 Redfish 接口查询服务器状态并执行电源控制"
+测试类型: "功能测试"
+优先级: "P1"
+
+预置条件:
+  - BMC Redfish 接口可达（HTTPS 端口 443）
+  - Redfish 认证正常（Administrator / Admin@90000）
+  - 已获取有效的 X-Auth-Token
+  - 服务器当前处于开机状态
+
+测试步骤:
+  - step_id: "step_001"
+    description: "查一下这台服务器当前的电源状态和健康状况"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_contains:
+        - "PowerState"
+        - "Status"
+
+  - step_id: "step_002"
+    description: "获取服务器的详细硬件信息，包括制造商、型号、序列号"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_contains:
+        - "Manufacturer"
+        - "Model"
+        - "SerialNumber"
+
+  - step_id: "step_003"
+    description: "查看服务器有哪些可用的重启方式"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_contains:
+        - "ResetType"
+        - "ForceRestart"
+
+  - step_id: "step_004"
+    description: "优雅地重启这台服务器"
+    interface_preference: "redfish"
+    notes: "使用 GracefulRestart 方式，发送后需验证电源状态最终恢复为 On"
+    expected:
+      success: true
+      http_status: 204
+
+  - step_id: "step_005"
+    description: "等服务器重启完成后，确认电源状态已经恢复正常"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_contains:
+        - "PowerState"
+        - value: "On"
+          field: "PowerState"
+
+预期结果:
+  - step_001: 返回系统电源状态 (On/Off) 和健康状况 (OK/Warning/Critical)
+  - step_002: 返回服务器制造商、型号、序列号等基本信息，字段非空
+  - step_003: 返回支持的 ResetType 列表，至少包含 On/ForceRestart/GracefulRestart
+  - step_004: 重启命令成功，HTTP 返回 204 No Content
+  - step_005: 重启后电源状态恢复为 On，健康状态为 OK
+  - 环境恢复: 服务器恢复到测试前的开机状态
+
+清理步骤:
+  - 确认服务器处于开机状态，如果未开机则执行开机操作
+  - 如果无法恢复，在执行记录中标注"环境未完全恢复"

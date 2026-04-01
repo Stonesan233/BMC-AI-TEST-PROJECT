@@ -1,0 +1,556 @@
+{
+  "description": "Redfish RAG retrieval quality evaluation",
+  "db_stats": {
+    "ipmi_chunks": 847,
+    "redfish_chunks": 585,
+    "total": 1432
+  },
+  "modes": {
+    "vector": {
+      "total": 40,
+      "P@1": 0.475,
+      "P@3": 0.6,
+      "P@5": 0.625,
+      "MRR@1": 0.475,
+      "MRR@3": 0.5292,
+      "by_category": {
+        "exact_name": {
+          "count": 8,
+          "P@1": 0.625,
+          "P@3": 0.75,
+          "P@5": 0.75,
+          "MRR@1": 0.625,
+          "MRR@3": 0.6667
+        },
+        "exact_uri": {
+          "count": 8,
+          "P@1": 0.625,
+          "P@3": 0.625,
+          "P@5": 0.625,
+          "MRR@1": 0.625,
+          "MRR@3": 0.625
+        },
+        "fuzzy": {
+          "count": 10,
+          "P@1": 0.2,
+          "P@3": 0.4,
+          "P@5": 0.5,
+          "MRR@1": 0.2,
+          "MRR@3": 0.3
+        },
+        "http_method": {
+          "count": 7,
+          "P@1": 0.7143,
+          "P@3": 1.0,
+          "P@5": 1.0,
+          "MRR@1": 0.7143,
+          "MRR@3": 0.8333
+        },
+        "scenario": {
+          "count": 7,
+          "P@1": 0.2857,
+          "P@3": 0.2857,
+          "P@5": 0.2857,
+          "MRR@1": 0.2857,
+          "MRR@3": 0.2857
+        }
+      }
+    },
+    "hybrid_a07": {
+      "total": 40,
+      "P@1": 0.575,
+      "P@3": 0.65,
+      "P@5": 0.675,
+      "MRR@1": 0.575,
+      "MRR@3": 0.6125,
+      "by_category": {
+        "exact_name": {
+          "count": 8,
+          "P@1": 0.75,
+          "P@3": 0.875,
+          "P@5": 0.875,
+          "MRR@1": 0.75,
+          "MRR@3": 0.8125
+        },
+        "exact_uri": {
+          "count": 8,
+          "P@1": 0.625,
+          "P@3": 0.625,
+          "P@5": 0.625,
+          "MRR@1": 0.625,
+          "MRR@3": 0.625
+        },
+        "fuzzy": {
+          "count": 10,
+          "P@1": 0.4,
+          "P@3": 0.5,
+          "P@5": 0.6,
+          "MRR@1": 0.4,
+          "MRR@3": 0.45
+        },
+        "http_method": {
+          "count": 7,
+          "P@1": 0.8571,
+          "P@3": 1.0,
+          "P@5": 1.0,
+          "MRR@1": 0.8571,
+          "MRR@3": 0.9286
+        },
+        "scenario": {
+          "count": 7,
+          "P@1": 0.2857,
+          "P@3": 0.2857,
+          "P@5": 0.2857,
+          "MRR@1": 0.2857,
+          "MRR@3": 0.2857
+        }
+      }
+    },
+    "hybrid_a05": {
+      "total": 40,
+      "P@1": 0.575,
+      "P@3": 0.675,
+      "P@5": 0.75,
+      "MRR@1": 0.575,
+      "MRR@3": 0.625,
+      "by_category": {
+        "exact_name": {
+          "count": 8,
+          "P@1": 0.75,
+          "P@3": 0.875,
+          "P@5": 1.0,
+          "MRR@1": 0.75,
+          "MRR@3": 0.8125
+        },
+        "exact_uri": {
+          "count": 8,
+          "P@1": 0.625,
+          "P@3": 0.625,
+          "P@5": 0.625,
+          "MRR@1": 0.625,
+          "MRR@3": 0.625
+        },
+        "fuzzy": {
+          "count": 10,
+          "P@1": 0.4,
+          "P@3": 0.6,
+          "P@5": 0.7,
+          "MRR@1": 0.4,
+          "MRR@3": 0.5
+        },
+        "http_method": {
+          "count": 7,
+          "P@1": 0.8571,
+          "P@3": 1.0,
+          "P@5": 1.0,
+          "MRR@1": 0.8571,
+          "MRR@3": 0.9286
+        },
+        "scenario": {
+          "count": 7,
+          "P@1": 0.2857,
+          "P@3": 0.2857,
+          "P@5": 0.4286,
+          "MRR@1": 0.2857,
+          "MRR@3": 0.2857
+        }
+      }
+    },
+    "keyword": {
+      "total": 40,
+      "P@1": 0.575,
+      "P@3": 0.725,
+      "P@5": 0.75,
+      "MRR@1": 0.575,
+      "MRR@3": 0.6375,
+      "by_category": {
+        "exact_name": {
+          "count": 8,
+          "P@1": 0.875,
+          "P@3": 1.0,
+          "P@5": 1.0,
+          "MRR@1": 0.875,
+          "MRR@3": 0.9375
+        },
+        "exact_uri": {
+          "count": 8,
+          "P@1": 0.625,
+          "P@3": 0.625,
+          "P@5": 0.625,
+          "MRR@1": 0.625,
+          "MRR@3": 0.625
+        },
+        "fuzzy": {
+          "count": 10,
+          "P@1": 0.3,
+          "P@3": 0.6,
+          "P@5": 0.7,
+          "MRR@1": 0.3,
+          "MRR@3": 0.4167
+        },
+        "http_method": {
+          "count": 7,
+          "P@1": 0.7143,
+          "P@3": 1.0,
+          "P@5": 1.0,
+          "MRR@1": 0.7143,
+          "MRR@3": 0.8333
+        },
+        "scenario": {
+          "count": 7,
+          "P@1": 0.4286,
+          "P@3": 0.4286,
+          "P@5": 0.4286,
+          "MRR@1": 0.4286,
+          "MRR@3": 0.4286
+        }
+      }
+    }
+  },
+  "test_queries": [
+    {
+      "query": "/redfish/v1/Systems/system_id",
+      "category": "exact_uri",
+      "expected_keywords": [
+        "/redfish/v1/systems"
+      ]
+    },
+    {
+      "query": "/redfish/v1/Managers/1",
+      "category": "exact_uri",
+      "expected_keywords": [
+        "/redfish/v1/managers"
+      ]
+    },
+    {
+      "query": "/redfish/v1/Chassis/1",
+      "category": "exact_uri",
+      "expected_keywords": [
+        "/redfish/v1/chassis"
+      ]
+    },
+    {
+      "query": "/redfish/v1/SessionService/Sessions",
+      "category": "exact_uri",
+      "expected_keywords": [
+        "sessionservice",
+        "sessions"
+      ]
+    },
+    {
+      "query": "/redfish/v1/AccountService/Accounts",
+      "category": "exact_uri",
+      "expected_keywords": [
+        "accountservice",
+        "accounts"
+      ]
+    },
+    {
+      "query": "/redfish/v1/EventService",
+      "category": "exact_uri",
+      "expected_keywords": [
+        "eventservice"
+      ]
+    },
+    {
+      "query": "/redfish/v1/UpdateService",
+      "category": "exact_uri",
+      "expected_keywords": [
+        "updateservice"
+      ]
+    },
+    {
+      "query": "/redfish/v1/TaskService/Tasks",
+      "category": "exact_uri",
+      "expected_keywords": [
+        "taskservice",
+        "tasks"
+      ]
+    },
+    {
+      "query": "查询系统信息 ComputerSystem",
+      "category": "exact_name",
+      "expected_keywords": [
+        "system",
+        "系统"
+      ]
+    },
+    {
+      "query": "电源控制 Power Control",
+      "category": "exact_name",
+      "expected_keywords": [
+        "power",
+        "电源",
+        "控制"
+      ]
+    },
+    {
+      "query": "用户管理 AccountService",
+      "category": "exact_name",
+      "expected_keywords": [
+        "accountservice",
+        "用户"
+      ]
+    },
+    {
+      "query": "会话管理 SessionService",
+      "category": "exact_name",
+      "expected_keywords": [
+        "session",
+        "会话"
+      ]
+    },
+    {
+      "query": "查询Manager信息",
+      "category": "exact_name",
+      "expected_keywords": [
+        "manager"
+      ]
+    },
+    {
+      "query": "查询Chassis传感器",
+      "category": "exact_name",
+      "expected_keywords": [
+        "chassis",
+        "传感器"
+      ]
+    },
+    {
+      "query": "事件订阅 EventService",
+      "category": "exact_name",
+      "expected_keywords": [
+        "event",
+        "事件"
+      ]
+    },
+    {
+      "query": "固件更新 UpdateService",
+      "category": "exact_name",
+      "expected_keywords": [
+        "update",
+        "固件",
+        "更新"
+      ]
+    },
+    {
+      "query": "怎么查看服务器电源状态",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "power",
+        "电源",
+        "状态"
+      ]
+    },
+    {
+      "query": "如何重启BMC",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "reset",
+        "重启",
+        "manager"
+      ]
+    },
+    {
+      "query": "查一下系统序列号和型号",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "serial",
+        "model",
+        "系统",
+        "型号"
+      ]
+    },
+    {
+      "query": "创建一个新用户",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "account",
+        "用户",
+        "创建"
+      ]
+    },
+    {
+      "query": "修改网络配置",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "network",
+        "网络",
+        "ethernet"
+      ]
+    },
+    {
+      "query": "查看当前登录的会话",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "session",
+        "会话",
+        "登录"
+      ]
+    },
+    {
+      "query": "查看风扇转速",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "fan",
+        "风扇"
+      ]
+    },
+    {
+      "query": "配置SNMP告警",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "snmp",
+        "告警"
+      ]
+    },
+    {
+      "query": "升级BMC固件",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "firmware",
+        "固件",
+        "update"
+      ]
+    },
+    {
+      "query": "查看温度传感器数据",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "temperature",
+        "温度",
+        "sensor"
+      ]
+    },
+    {
+      "query": "GET 服务器系统资源信息",
+      "category": "http_method",
+      "expected_keywords": [
+        "systems",
+        "get",
+        "系统"
+      ]
+    },
+    {
+      "query": "PATCH 修改Manager属性",
+      "category": "http_method",
+      "expected_keywords": [
+        "managers",
+        "patch"
+      ]
+    },
+    {
+      "query": "POST 创建用户会话",
+      "category": "http_method",
+      "expected_keywords": [
+        "session",
+        "post",
+        "创建"
+      ]
+    },
+    {
+      "query": "DELETE 删除用户账号",
+      "category": "http_method",
+      "expected_keywords": [
+        "account",
+        "delete",
+        "删除"
+      ]
+    },
+    {
+      "query": "POST 系统重启操作",
+      "category": "http_method",
+      "expected_keywords": [
+        "reset",
+        "post",
+        "重启"
+      ]
+    },
+    {
+      "query": "GET 查询日志服务",
+      "category": "http_method",
+      "expected_keywords": [
+        "logservice",
+        "get",
+        "日志"
+      ]
+    },
+    {
+      "query": "PATCH 修改网卡配置",
+      "category": "http_method",
+      "expected_keywords": [
+        "ethernet",
+        "patch",
+        "网络"
+      ]
+    },
+    {
+      "query": "我想通过Redfish接口远程给服务器开机",
+      "category": "scenario",
+      "expected_keywords": [
+        "power",
+        "on",
+        "开机",
+        "控制"
+      ]
+    },
+    {
+      "query": "如何使用Redfish添加一个管理员账户",
+      "category": "scenario",
+      "expected_keywords": [
+        "account",
+        "用户",
+        "add",
+        "管理员"
+      ]
+    },
+    {
+      "query": "查询服务器的CPU和内存信息",
+      "category": "scenario",
+      "expected_keywords": [
+        "processor",
+        "memory",
+        "cpu",
+        "处理器"
+      ]
+    },
+    {
+      "query": "查看BMC的固件版本号",
+      "category": "scenario",
+      "expected_keywords": [
+        "firmware",
+        "version",
+        "版本",
+        "manager"
+      ]
+    },
+    {
+      "query": "配置BMC的IP地址",
+      "category": "scenario",
+      "expected_keywords": [
+        "ip",
+        "address",
+        "ethernet",
+        "网络"
+      ]
+    },
+    {
+      "query": "导出系统日志用于排查问题",
+      "category": "scenario",
+      "expected_keywords": [
+        "log",
+        "日志",
+        "导出"
+      ]
+    },
+    {
+      "query": "强制重启卡死的系统",
+      "category": "scenario",
+      "expected_keywords": [
+        "force",
+        "restart",
+        "重启",
+        "reset"
+      ]
+    }
+  ]
+}
