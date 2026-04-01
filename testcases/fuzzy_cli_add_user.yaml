@@ -1,0 +1,109 @@
+# openUBMC 测试用例 - 模糊场景：通过 CLI 命令行添加新 BMC 用户
+# 特点：只说"添加一个新的 BMC 用户"，不提供具体命令或参数
+# RAG 职责：将模糊描述映射到 CLI ipmcset -d adduser 命令，
+#           提供交互式密码输入流程和注意事项
+
+用例_编号: "TC-FUZZY-CLI-001"
+用例_名称: "通过 CLI 添加一个新 BMC 用户并验证"
+测试类型: "功能测试"
+优先级: "P1"
+
+预置条件:
+  - BMC SSH 接口可达（端口 22）
+  - SSH 认证正常（Administrator / Admin@90000）
+  - 当前用户数未达上限（排除 ID=2 的 Administrator 后不超过 14 个）
+  - 测试用户 cli_testuser 不已存在（如存在则先删除）
+
+测试步骤:
+  - step_id: "step_001"
+    description: "看看现在系统里有多少用户"
+    interface_preference: "cli"
+    expected:
+      success: true
+      result_contains:
+        - "Administrator"
+
+  - step_id: "step_002"
+    description: "给 BMC 系统添加一个新的用户账号"
+    notes: "需要通过 RAG 检索具体的 CLI 命令，此命令为交互式命令"
+    interface_preference: "cli"
+    parameters:
+      username: "cli_testuser"
+    expected:
+      success: true
+      result_contains:
+        - "success"
+      interactive: true
+      interactive_steps:
+        - prompt: "Input your password"
+          input: "Admin@90000"
+        - prompt: "Password"
+          input: "Test@90000"
+        - prompt: "Confirm password"
+          input: "Test@90000"
+
+  - step_id: "step_003"
+    description: "设置新创建用户的权限为管理员"
+    interface_preference: "cli"
+    parameters:
+      username: "cli_testuser"
+      privilege: "4"
+    expected:
+      success: true
+      interactive: true
+
+  - step_id: "step_004"
+    description: "启用这个新用户"
+    interface_preference: "cli"
+    parameters:
+      username: "cli_testuser"
+      state: "enabled"
+    expected:
+      success: true
+
+  - step_id: "step_005"
+    description: "确认新用户已经在用户列表里并且权限正确"
+    interface_preference: "cli"
+    expected:
+      success: true
+      result_contains:
+        - "cli_testuser"
+
+  - step_id: "step_006"
+    description: "用新用户登录验证一下"
+    interface_preference: "cli"
+    parameters:
+      username: "cli_testuser"
+      password: "Test@90000"
+    expected:
+      success: true
+
+  - step_id: "step_007"
+    description: "删除刚才创建的测试用户，恢复环境"
+    interface_preference: "cli"
+    expected:
+      success: true
+      interactive: true
+
+  - step_id: "step_008"
+    description: "再查一次用户列表，确认测试用户已经被删掉了"
+    interface_preference: "cli"
+    expected:
+      success: true
+      result_not_contains:
+        - "cli_testuser"
+
+预期结果:
+  - step_001: 用户列表查询成功，包含 Administrator 账户
+  - step_002: 新用户 cli_testuser 创建成功，交互式密码输入完成
+  - step_003: 用户权限设置为 Administrator 成功
+  - step_004: 用户启用成功
+  - step_005: 用户列表中出现 cli_testuser 且权限正确
+  - step_006: 使用新用户登录成功
+  - step_007: 测试用户删除成功
+  - step_008: 用户列表中不再包含 cli_testuser
+  - 环境恢复: 最终用户列表与测试前一致
+
+清理步骤:
+  - 确保测试用户 cli_testuser 已被删除
+  - 如果删除失败，在执行记录中标注"环境未完全恢复"

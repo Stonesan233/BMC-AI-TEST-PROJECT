@@ -84,7 +84,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--doc_type", type=str, default=None,
-        help="强制指定文档类型 (ipmi / redfish)",
+        help="强制指定文档类型 (ipmi / redfish / cli)",
     )
     parser.add_argument(
         "--persist_dir", type=str, default=DEFAULT_PERSIST_DIR,
