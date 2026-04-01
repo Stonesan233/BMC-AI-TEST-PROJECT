@@ -132,6 +132,80 @@ _HTTP_METHOD_IN_TABLE = re.compile(
 _SCHEMA_FROM_URI = re.compile(r"/redfish/v1/([A-Z][A-Za-z0-9_]*)")
 
 # ---------------------------------------------------------------------------
+# URI 路径中的复数形式 -> _SYNONYM_MAP 中的标准 schema 名
+# ---------------------------------------------------------------------------
+_PLURAL_TO_SCHEMA = {
+    "Systems": "ComputerSystem",
+    "Managers": "Manager",
+    "Accounts": "AccountService",
+    "Sessions": "SessionService",
+    "Tasks": "TaskService",
+    "Events": "EventService",
+    "Storages": "Storage",
+    "Processors": "Processor",
+    "EthernetInterfaces": "EthernetInterface",
+    "Certificates": "CertificateService",
+    "Logs": "LogService",
+    "Sensors": "Sensor",
+    "Updates": "UpdateService",
+    # 以下已与 _SYNONYM_MAP key 一致，无需映射
+    # "Chassis", "Thermal", "Memory", "Registries", "VirtualMedia", "Reset"
+}
+
+
+def _normalize_schema(raw_schema: str) -> str:
+    """将 URI 路径中的资源名归一化为 _SYNONYM_MAP 中的标准 key."""
+    return _PLURAL_TO_SCHEMA.get(raw_schema, raw_schema)
+
+# URI 路径中的复数形式 -> _SYNONYM_MAP 中的单数形式映射
+_PLURAL_TO_SINGULAR = {
+    "Systems": "ComputerSystem",
+    "Managers": "Manager",
+    "Chassis": "Chassis",
+    "Accounts": "AccountService",
+    "Sessions": "SessionService",
+    "Tasks": "TaskService",
+    "Events": "EventService",
+    "Logs": "LogService",
+    "Sensors": "Sensor",
+    "Processors": "Processor",
+    "Memory": "Memory",
+    "EthernetInterfaces": "EthernetInterface",
+    "Storages": "Storage",
+    "Updates": "UpdateService",
+    "Registries": "Registries",
+    "Certificates": "CertificateService",
+}
+
+# ---------------------------------------------------------------------------
+# 常见 Redfish 同义词映射 (用于在 chunk text 中补充检索关键词)
+# ---------------------------------------------------------------------------
+_SYNONYM_MAP = {
+    "PowerState": ["电源状态", "开机状态", "关机状态", "电源控制", "Power"],
+    "FirmwareVersion": ["固件版本", "软件版本", "BMC版本", "Firmware"],
+    "EthernetInterface": ["网络接口", "网卡", "IP地址", "Ethernet", "网络配置"],
+    "AccountService": ["用户管理", "账号管理", "Account", "用户"],
+    "SessionService": ["会话管理", "登录", "Session", "会话"],
+    "ComputerSystem": ["系统资源", "服务器信息", "System", "系统"],
+    "Chassis": ["机箱", "散热", "风扇", "Chassis", "电源"],
+    "Thermal": ["温度", "散热", "风扇转速", "Thermal", "传感器"],
+    "Manager": ["管理控制器", "BMC", "Manager", "管理模块"],
+    "EventService": ["事件服务", "告警", "Event", "订阅"],
+    "UpdateService": ["更新服务", "固件升级", "Update", "升级"],
+    "TaskService": ["任务服务", "异步任务", "Task"],
+    "LogService": ["日志服务", "系统日志", "Log", "SEL"],
+    "Sensor": ["传感器", "Sensor", "温度", "电压", "风扇"],
+    "Reset": ["重启", "复位", "Reset", "ForceRestart", "GracefulRestart"],
+    "Registries": ["注册表", "消息注册", "Registry"],
+    "CertificateService": ["证书服务", "HTTPS", "Certificate", "SSL"],
+    "VirtualMedia": ["虚拟媒体", "VirtualMedia", "虚拟光驱"],
+    "Storage": ["存储", "Storage", "磁盘", "RAID"],
+    "Memory": ["内存", "Memory", "DIMM"],
+    "Processor": ["处理器", "CPU", "Processor"],
+    "NetworkProtocol": ["网络协议", "SNMP", "IPMI", "SSH", "NTP"],
+}
+
+# ---------------------------------------------------------------------------
 # 标签 -> 子节类型映射 (用于状态机)
 # ---------------------------------------------------------------------------
 _LABEL_SECTION_MAP = [
@@ -679,6 +753,12 @@ class DocxRedfishParser(BaseParser):
         """
         将 collector 中的端点数据 flush 为一个 chunk 追加到 chunks.
 
+        v3 优化:
+          - text 开头放置 URI + HTTP 方法 (提升 exact_uri 检索命中率)
+          - 追加同义词行 (提升 fuzzy/scenario 检索召回)
+          - metadata 新增 full_uri, uri_priority, chunk_priority
+          - property_table chunk 标记低优先级
+
         Returns:
             更新后的 chunk_counter
         """
@@ -694,56 +774,77 @@ class DocxRedfishParser(BaseParser):
         # -- 提取中英文标题 --
         chinese_name, english_name = self._extract_names(full_title)
 
-        # -- 构建 text --
-        parts: List[str] = [f"API: {full_title}"]
-
-        # URI
+        # -- 主 URI 和 schema --
+        primary_uri = ""
+        schema_name = ""
         if collector.uris:
-            parts.append(f"URI: {', '.join(collector.uris)}")
+            primary_uri = min(collector.uris, key=len)
+            schema_match = _SCHEMA_FROM_URI.search(primary_uri)
+            if schema_match:
+                schema_name = _normalize_schema(schema_match.group(1))
 
-        # HTTP 方法
+        # -- 构建 text (URI-FIRST 布局) --
+        parts: List[str] = []
+
+        # 1) URI 行 (放在最前面, 提升 exact_uri 检索)
+        if primary_uri:
+            method_str = "/".join(collector.http_methods) if collector.http_methods else "GET"
+            parts.append(f"URI: {primary_uri}  [{method_str}]")
+
+        # 2) 标题行
+        parts.append(f"API: {full_title}")
+
+        # 3) 同义词行 (基于 schema_name 和关键词注入)
+        synonyms = self._build_synonyms(
+            full_title, chinese_name, english_name,
+            primary_uri, schema_name, collector,
+        )
+        if synonyms:
+            parts.append(f"同义词: {', '.join(synonyms)}")
+
+        # 4) HTTP 方法
         if collector.http_methods:
             parts.append(f"HTTP 方法: {', '.join(collector.http_methods)}")
 
-        # 功能描述
+        # 5) 功能描述
         desc = "\n".join(collector.description_lines).strip()
         if desc:
             parts.append(f"功能描述:\n{desc}")
 
-        # 请求头
+        # 6) 请求头
         if collector.request_headers:
             parts.append("请求头:\n" + "\n".join(collector.request_headers))
 
-        # 请求消息体
+        # 7) 请求消息体
         if collector.request_body_parts:
             parts.append("请求消息体:\n" + "\n".join(collector.request_body_parts))
 
-        # 参数说明
+        # 8) 参数说明
         if collector.parameter_tables:
             parts.append("参数说明:\n" + "\n\n".join(collector.parameter_tables))
 
-        # 使用指南
+        # 9) 使用指南
         guide = "\n".join(collector.usage_guide_lines).strip()
         if guide:
             parts.append(f"使用指南:\n{guide}")
 
-        # 请求示例
+        # 10) 请求示例
         if collector.request_example_parts:
             parts.append("请求示例:\n" + "\n\n".join(collector.request_example_parts))
 
-        # 响应示例
+        # 11) 响应示例
         if collector.response_example_parts:
             parts.append("响应示例:\n" + "\n\n".join(collector.response_example_parts))
 
-        # 输出说明
+        # 12) 输出说明
         if collector.response_field_tables:
             parts.append("输出说明:\n" + "\n\n".join(collector.response_field_tables))
 
-        # 状态码
+        # 13) 状态码
         if collector.status_code_tables:
             parts.append("状态码:\n" + "\n\n".join(collector.status_code_tables))
 
-        # 注意事项
+        # 14) 注意事项
         if collector.notes_lines:
             parts.append("注意事项:\n" + "\n".join(collector.notes_lines))
 
@@ -754,20 +855,26 @@ class DocxRedfishParser(BaseParser):
         # -- 构建 metadata --
         extra: Dict[str, Any] = {}
         extra["full_title"] = full_title[:500]
+        extra["chunk_priority"] = 1  # resource chunk 为最高优先级
 
         if chinese_name:
             extra["chinese_name"] = chinese_name
         if english_name:
             extra["english_name"] = english_name
 
-        # resource_uri (取最短的 URI 作为主 URI)
-        if collector.uris:
-            primary_uri = min(collector.uris, key=len)
+        # resource_uri (主 URI, 最短)
+        if primary_uri:
             extra["resource_uri"] = primary_uri
-            # 从 URI 提取 schema 名称
-            schema_match = _SCHEMA_FROM_URI.search(primary_uri)
-            if schema_match:
-                extra["schema_name"] = schema_match.group(1)
+            extra["full_uri"] = primary_uri
+            extra["uri_priority"] = 1
+
+        # 额外 URI 列表
+        if len(collector.uris) > 1:
+            extra["all_uris"] = ", ".join(collector.uris[:5])
+
+        # schema_name
+        if schema_name:
+            extra["schema_name"] = schema_name
 
         # http_method (逗号分隔字符串)
         if collector.http_methods:
@@ -810,11 +917,65 @@ class DocxRedfishParser(BaseParser):
 
         logger.debug(
             f"Flush: [api_{chunk_counter:05d}] "
-            f"URI={extra.get('resource_uri', '-')} "
+            f"URI={primary_uri or '-'} "
             f"Methods={extra.get('http_method', '-')} "
             f"| {full_title[:60]}"
         )
         return chunk_counter
+
+    # ======================================================================
+    # 同义词生成
+    # ======================================================================
+
+    @staticmethod
+    def _build_synonyms(
+        full_title: str,
+        chinese_name: Optional[str],
+        english_name: Optional[str],
+        primary_uri: str,
+        schema_name: str,
+        collector: ResourceCollector,
+    ) -> List[str]:
+        """
+        基于 schema_name、标题、URI 生成同义词列表, 提升 fuzzy/scenario 检索召回.
+
+        同义词来源:
+          1. _SYNONYM_MAP 中 schema_name 对应的中文/英文同义词
+          2. 标题中的关键词
+          3. HTTP 方法隐含的操作语义
+        """
+        synonyms: List[str] = []
+
+        # 1. Schema-based 同义词
+        if schema_name and schema_name in _SYNONYM_MAP:
+            synonyms.extend(_SYNONYM_MAP[schema_name])
+
+        # 2. URI 路径中的资源名片段 (如 "AccountService" -> "账号")
+        if primary_uri:
+            for key, vals in _SYNONYM_MAP.items():
+                if key.lower() in primary_uri.lower() and key != schema_name:
+                    synonyms.extend(vals[:2])  # 每个关联资源最多取 2 个
+
+        # 3. HTTP 方法隐含的操作语义
+        for method in collector.http_methods:
+            if method == "POST":
+                synonyms.extend(["创建", "添加", "新增", "Create"])
+            elif method == "PATCH":
+                synonyms.extend(["修改", "更新", "编辑", "Update", "设置"])
+            elif method == "DELETE":
+                synonyms.extend(["删除", "移除", "Delete"])
+            elif method == "GET":
+                if "查询" not in " ".join(synonyms):
+                    synonyms.extend(["查询", "获取", "查看", "Get"])
+
+        # 4. 去重并限制数量
+        seen = set()
+        unique: List[str] = []
+        for s in synonyms:
+            if s not in seen:
+                seen.add(s)
+                unique.append(s)
+        return unique[:12]  # 最多 12 个同义词
 
     # ======================================================================
     # 内部方法

@@ -1,0 +1,66 @@
+# openUBMC 测试用例 - 模糊场景：通过 Redfish 查询 BMC 固件版本
+# 特点：只给出模糊意图（"看看BMC跑的是什么软件"、"管理模块版本号"），不提供具体 URI 或命令
+# RAG 职责：将"固件版本"映射到 GET /redfish/v1/Managers/{id}，提取 FirmwareVersion 字段
+#          或 GET /redfish/v1/UpdateService 查询更新服务信息
+
+用例_编号: "TC-FUZZY-RED-002"
+用例_名称: "查询BMC管理模块的软件版本信息"
+测试类型: "功能测试"
+优先级: "P1"
+
+预置条件:
+  - BMC Redfish 接口可达（HTTPS 端口 443）
+  - Redfish 认证正常（Administrator / Admin@90000）
+  - 已获取有效的 X-Auth-Token
+  - BMC 固件已正常加载（非升级中状态）
+
+测试步骤:
+  - step_id: "step_001"
+    description: "看看这台BMC管理模块跑的是什么软件"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_contains:
+        - "FirmwareVersion"
+
+  - step_id: "step_002"
+    description: "管理模块的版本号是多少"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_not_empty: true
+
+  - step_id: "step_003"
+    description: "确认一下管理控制器的当前时间和日期"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_contains:
+        - "DateTime"
+
+  - step_id: "step_004"
+    description: "看看BMC支持哪些管理功能，比如能不能远程升级固件"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_contains:
+        - "UpdateService"
+
+  - step_id: "step_005"
+    description: "查一下管理模块的网络接口信息"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_contains:
+        - "EthernetInterfaces"
+
+预期结果:
+  - step_001: 返回 Manager 资源，包含 FirmwareVersion 字段，值非空
+  - step_002: 能正确返回固件版本号字符串，格式为 x.y.z 形式
+  - step_003: 返回管理控制器的当前 DateTime，值非空
+  - step_004: 返回 Manager 资源信息，包含可用服务列表或 UpdateService 引用
+  - step_005: 返回 EthernetInterfaces 集合，至少包含一个网络接口
+  - 所有步骤 HTTP 状态码为 200
+
+清理步骤:
+  - 无需清理（只读操作）

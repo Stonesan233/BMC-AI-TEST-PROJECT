@@ -291,6 +291,7 @@ async def run_evaluation(output_file: str) -> None:
                 top_k=5,
                 alpha=alpha,
                 doc_type="redfish",
+                chunk_type="resource",
             )
             top_metas = [r["metadata"] for r in results]
             all_mode_results[mode_name].append({

@@ -55,6 +55,7 @@ SYSTEM_PROMPT = """\
 3. 每条查询应该短小精悍（2~8 个词）
 4. 包含原始查询中未明确写出但相关的精确术语
 5. 如果查询涉及 Redfish/REST 操作，扩展结果应包含 URI 路径和 HTTP 方法
+6. 如果查询中包含 Redfish URI 路径（如 /redfish/v1/...），必须原样保留该路径
 """
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,7 @@ FEW_SHOT_EXAMPLES = [
         "input": "查看CPU温度",
         "output": ["Get CPU Reading", "获取CPU读数", "CPU温度", "Sensor Reading", "CPU Temperature"],
     },
-    # --- Redfish 示例 ---
+    # --- Redfish 场景示例 ---
     {
         "input": "查看服务器电源状态",
         "output": ["PowerState GET", "/redfish/v1/Systems Power", "查询电源状态", "System Power", "电源控制"],
@@ -127,6 +128,71 @@ FEW_SHOT_EXAMPLES = [
             "/redfish/v1/Managers firmware",
             "查询固件版本",
             "BMC Version UpdateService",
+        ],
+    },
+    # --- Redfish exact_uri 示例 ---
+    {
+        "input": "/redfish/v1/Systems/{SystemId}",
+        "output": [
+            "/redfish/v1/Systems GET PATCH",
+            "ComputerSystem 查询系统资源",
+            "服务器信息 Processor Memory",
+            "Systems PowerState Status Boot",
+        ],
+    },
+    {
+        "input": "/redfish/v1/Managers/{ManagerId}",
+        "output": [
+            "/redfish/v1/Managers GET PATCH",
+            "Manager 管理控制器 BMC",
+            "FirmwareVersion DateTime",
+            "管理模块信息查询",
+        ],
+    },
+    {
+        "input": "/redfish/v1/Chassis/{ChassisId}",
+        "output": [
+            "/redfish/v1/Chassis GET",
+            "Chassis 机箱信息",
+            "Thermal Power Sensors",
+            "机箱状态 传感器",
+        ],
+    },
+    # --- Redfish 场景扩展示例 ---
+    {
+        "input": "重启BMC管理控制器",
+        "output": [
+            "Manager.Reset POST",
+            "/redfish/v1/Managers/Actions/Reset",
+            "GracefulRestart ForceRestart",
+            "BMC重启 管理控制器复位",
+        ],
+    },
+    {
+        "input": "查看服务器的CPU和内存配置",
+        "output": [
+            "Processor GET /redfish/v1/Systems/Processors",
+            "Memory GET /redfish/v1/Systems/Memory",
+            "CPU处理器 内存DIMM",
+            "处理器型号 核心数 主频",
+        ],
+    },
+    {
+        "input": "导出系统日志",
+        "output": [
+            "LogService GET /redfish/v1/Systems/LogServices",
+            "日志服务 DownloadLog",
+            "系统日志 SEL 事件日志",
+            "LogEntry 事件记录",
+        ],
+    },
+    {
+        "input": "修改BMC的IP地址",
+        "output": [
+            "EthernetInterface PATCH",
+            "/redfish/v1/Managers/EthernetInterfaces",
+            "IPv4StaticAddresses IPAddress",
+            "网络配置 修改IP 静态地址",
         ],
     },
 ]
