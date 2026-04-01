@@ -22,6 +22,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import chromadb
 
+from src.rag.query_rewriter import QueryRewriter
+
 logger = logging.getLogger("rag.retriever")
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,8 @@ class HybridRetriever:
         chroma_path: str = "./shared/rag_index",
         collection_name: str = "openubmc_rag",
         alpha: float = 0.7,
+        enable_rewrite: bool = False,
+        rewrite_model: str = "qwen3.5-plus",
     ):
         self.alpha = alpha
 
@@ -60,6 +64,16 @@ class HybridRetriever:
 
         self._load_documents()
         self._build_bm25_index()
+
+        # Query Rewriter (可选)
+        self.rewriter: Optional[QueryRewriter] = None
+        if enable_rewrite:
+            try:
+                self.rewriter = QueryRewriter(model=rewrite_model)
+                logger.info(f"Query Rewriter 已启用 (model={rewrite_model})")
+            except Exception as e:
+                logger.warning(f"Query Rewriter 初始化失败，已禁用: {e}")
+                self.rewriter = None
 
     # ==================================================================
     # 文档加载
@@ -319,3 +333,139 @@ class HybridRetriever:
             })
 
         return results
+
+    # ==================================================================
+    # Multi-query RRF 融合
+    # ==================================================================
+
+    @staticmethod
+    def _multi_rrf_fuse(
+        result_sets: List[List[Tuple[int, float]]],
+        weights: Optional[List[float]] = None,
+        k: int = 60,
+    ) -> List[Tuple[int, float]]:
+        """
+        多查询 Reciprocal Rank Fusion (支持权重).
+
+        每个结果集独立排序，未出现在某结果集中的文档不获得该查询的分数贡献。
+
+        score(d) = sum over queries: w_i / (k + rank_in_query(d))
+
+        Args:
+            result_sets: 多个 [(idx, score)] 结果集
+            weights: 每个结果集的权重 (默认全部 1.0)
+            k: RRF 常数
+
+        Returns:
+            [(idx, fused_score)] 按 score 降序
+        """
+        if weights is None:
+            weights = [1.0] * len(result_sets)
+
+        scores: Dict[int, float] = {}
+
+        for ranks, w in zip(result_sets, weights):
+            for rank_pos, (idx, _) in enumerate(ranks):
+                scores[idx] = scores.get(idx, 0.0) + w / (k + rank_pos + 1)
+
+        return sorted(scores.items(), key=lambda x: -x[1])
+
+    # ==================================================================
+    # Query Rewriting 检索
+    # ==================================================================
+
+    async def search_with_rewrite(
+        self,
+        query: str,
+        query_embedding: Optional[List[float]] = None,
+        top_k: int = 5,
+        alpha: Optional[float] = None,
+        chunk_type: Optional[str] = None,
+        rewrite_top_k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Query Rewriting + 多查询混合检索 + 多查询 RRF 融合.
+
+        流程:
+          1. 调用 QueryRewriter 将 query 扩展为多条精准查询
+          2. 对每条改写查询调用 search()，各自取 top_k*2 结果
+          3. 用多查询 RRF 融合所有结果集
+          4. 返回 top_k 最终结果
+
+        Args:
+            query: 原始查询文本
+            query_embedding: 原始查询的预计算向量 (改写查询用 BM25 检索)
+            top_k: 最终返回结果数
+            alpha: 向量权重 (None = 使用默认)
+            chunk_type: 过滤 chunk_type
+            rewrite_top_k: Query Rewriter 生成查询条数
+
+        Returns:
+            [{"id", "document", "metadata", "score"}]
+        """
+        if self.rewriter is None:
+            # Rewriter 未启用，降级为普通 search
+            logger.warning("Query Rewriter 未启用，降级为普通 search")
+            return self.search(query, query_embedding, top_k, alpha, chunk_type)
+
+        # Step 1: 查询扩展
+        rewritten_queries = await self.rewriter.rewrite(query, top_k=rewrite_top_k)
+        logger.info(f"Query rewrite: '{query}' -> {rewritten_queries}")
+
+        # Step 2: 多查询检索
+        expand_k = top_k * 2
+        all_ranks: List[List[Tuple[int, float]]] = []
+        weights: List[float] = []
+
+        for i, rq in enumerate(rewritten_queries):
+            # 改写查询: 使用 BM25 检索 (不需要 embedding)
+            # 原始查询: 使用混合检索 (如果有 embedding)
+            if rq == query and query_embedding is not None:
+                results = self.search(rq, query_embedding, expand_k, alpha, chunk_type)
+                ranks = [
+                    (self.id_to_idx[r["id"]], r["score"])
+                    for r in results
+                    if r["id"] in self.id_to_idx
+                ]
+            else:
+                # 改写查询只用 BM25 (没有对应 embedding)
+                a = alpha if alpha is not None else self.alpha
+                if a < 1.0:
+                    ranks = self._bm25_search(rq, expand_k, chunk_type)
+                else:
+                    ranks = []
+
+            if ranks:
+                all_ranks.append(ranks)
+                # 原始查询权重加倍，改写查询权重为 1.0
+                weights.append(2.0 if i == 0 else 1.0)
+
+        if not all_ranks:
+            return []
+
+        # Step 3: 多查询 RRF 融合
+        if len(all_ranks) == 1:
+            fused = all_ranks[0]
+        else:
+            fused = self._multi_rrf_fuse(all_ranks, weights=weights)
+
+        # Step 4: 格式化输出
+        results: List[Dict[str, Any]] = []
+        for idx, score in fused[:top_k]:
+            results.append({
+                "id": self.doc_ids[idx],
+                "document": self.documents[idx],
+                "metadata": self.metadatas[idx],
+                "score": score,
+            })
+
+        return results
+
+    # ==================================================================
+    # 资源释放
+    # ==================================================================
+
+    async def close(self):
+        """释放资源。"""
+        if self.rewriter is not None:
+            await self.rewriter.close()
