@@ -5,7 +5,7 @@ RAG 索引构建工具
 将文档解析、向量化并存入 Chroma 向量数据库。
 
 用法:
-  # 处理单个文件
+  # 使用 config.yaml 中的 embedding 配置
   python -m src.rag.build_index --file_path "C:/Codes/docs_word/iBMC IPMI 接口说明 03.docx"
 
   # 批量处理目录
@@ -15,9 +15,8 @@ RAG 索引构建工具
   python -m src.rag.build_index --file_path "doc.docx" --doc_type ipmi
 
 依赖:
-  - openai>=1.0.0      (AsyncOpenAI, DashScope 兼容)
+  - openai>=1.0.0      (AsyncOpenAI, OpenAI-compatible API)
   - chromadb>=0.4.0    (向量数据库)
-  - python-dotenv>=1.0 (环境变量加载)
   - tqdm>=4.60.0       (进度条)
   - python-docx>=0.8   (DOCX 解析, 由 Parser 间接依赖)
 """
@@ -32,11 +31,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import chromadb
-import httpx
-from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from tqdm import tqdm
 
+from src.core.config import load_config
+from src.core.client_factory import ClientFactory
 from src.rag.parsers import get_parser
 
 logger = logging.getLogger("rag.build_index")
@@ -44,17 +43,11 @@ logger = logging.getLogger("rag.build_index")
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
-DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-ENV_KEY_NAME = "DASHSCOPE_API_KEY"
-
-PRIMARY_EMBEDDING_MODEL = "text-embedding-v4"
-FALLBACK_EMBEDDING_MODEL = "text-embedding-v3"
-
 DEFAULT_COLLECTION = "openubmc_rag"
 DEFAULT_DIMENSION = 1024
 DEFAULT_PERSIST_DIR = "./shared/rag_index"
 
-BATCH_SIZE = 10       # DashScope embedding 每批最大数量
+BATCH_SIZE = 10       # Embedding 每批最大数量
 MAX_RETRIES = 3       # API 调用最大重试次数
 RETRY_DELAYS = [1, 2, 4]  # 重试间隔 (秒)
 
@@ -65,6 +58,10 @@ RETRY_DELAYS = [1, 2, 4]  # 重试间隔 (秒)
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="RAG 索引构建工具 - 将文档解析、向量化并存入 Chroma"
+    )
+    parser.add_argument(
+        "--config_path", type=str, default="config/config.yaml",
+        help="配置文件路径 (默认: config/config.yaml)",
     )
     parser.add_argument(
         "--file_path", type=str, default=None,
@@ -186,11 +183,11 @@ async def _embed_and_store(
     chunks: List[Dict[str, Any]],
     client: AsyncOpenAI,
     collection,
-    args: argparse.Namespace,
+    model_name: str,
+    dimension: int,
 ) -> None:
     """批量 Embedding 分块并存入 Chroma。"""
-    # DashScope text-embedding-v4 要求 input length [1, 8192] tokens
-    # 中文约 1 字符 ≈ 1-2 tokens, 取 6000 字符作为安全截断线
+    # 安全截断线: 中文约 1 字符 ~ 1-2 tokens, 取 6000 字符
     MAX_TEXT_CHARS = 6000
 
     texts = [c["text"] for c in chunks]
@@ -212,10 +209,6 @@ async def _embed_and_store(
         filtered_metadatas.append(meta)
     texts, ids, metadatas = filtered_texts, filtered_ids, filtered_metadatas
 
-    # 选择 Embedding 模型
-    model_name = PRIMARY_EMBEDDING_MODEL
-    all_embeddings: List[List[float]] = []
-
     # 分批处理
     batches = [
         texts[i : i + BATCH_SIZE]
@@ -231,24 +224,14 @@ async def _embed_and_store(
         batch_metas = metadatas[batch_start : batch_start + len(batch)]
 
         embeddings = await _embed_batch_with_retry(
-            client, batch, model_name, args.dimension
+            client, batch, model_name, dimension
         )
 
-        # 主模型失败 -> fallback
         if embeddings is None:
-            logger.warning(
-                f"主模型 {PRIMARY_EMBEDDING_MODEL} 失败，"
-                f"切换到 {FALLBACK_EMBEDDING_MODEL}"
+            raise RuntimeError(
+                f"Embedding 模型 {model_name} 失败 "
+                f"(batch {batch_idx + 1}/{len(batches)})"
             )
-            model_name = FALLBACK_EMBEDDING_MODEL
-            embeddings = await _embed_batch_with_retry(
-                client, batch, model_name, args.dimension
-            )
-            if embeddings is None:
-                raise RuntimeError(
-                    f"两个 Embedding 模型均失败 "
-                    f"(batch {batch_idx + 1}/{len(batches)})"
-                )
 
         # 逐批存入 Chroma (增量 upsert，避免全部完成后才存储)
         try:
@@ -286,21 +269,21 @@ async def main_async(args: argparse.Namespace) -> int:
     for f in files:
         print(f"  - {f}")
 
-    # 2. 初始化 OpenAI 客户端
-    load_dotenv()
-    api_key = os.getenv(ENV_KEY_NAME, "").strip()
-    if not api_key:
-        print(f"[ERROR] 环境变量 {ENV_KEY_NAME} 未设置")
-        return 1
-    print(f"[OK] API Key 已加载 (前缀={api_key[:8]}...)")
+    # 2. 加载配置 -> 创建 Embedding 客户端
+    cfg = load_config(args.config_path)
+    factory = ClientFactory(cfg)
+    openai_client = factory.create_for("embedding")
 
-    # 使用自定义 httpx 客户端，增加超时时间 (DashScope 大批量调用需要更长超时)
-    http_client = httpx.AsyncClient(timeout=120.0)
-    openai_client = AsyncOpenAI(
-        api_key=api_key,
-        base_url=DASHSCOPE_BASE_URL,
-        http_client=http_client,
-    )
+    embed_model = cfg.models.embedding.model
+    embed_dimension = cfg.models.embedding.dimension or args.dimension
+    embed_provider = cfg.models.embedding.provider
+    provider_cfg = cfg.providers[embed_provider]
+
+    print(f"[OK] Embedding 客户端已创建")
+    print(f"     provider:  {embed_provider}")
+    print(f"     base_url:  {provider_cfg.base_url}")
+    print(f"     model:     {embed_model}")
+    print(f"     dimension: {embed_dimension}")
 
     # 3. 初始化 Chroma
     persist_dir = args.persist_dir
@@ -335,7 +318,11 @@ async def main_async(args: argparse.Namespace) -> int:
                 continue
 
             # Embedding + 存储
-            await _embed_and_store(chunks, openai_client, collection, args)
+            await _embed_and_store(
+                chunks, openai_client, collection,
+                model_name=embed_model,
+                dimension=embed_dimension,
+            )
             total_chunks += len(chunks)
 
         except Exception as e:
@@ -355,8 +342,7 @@ async def main_async(args: argparse.Namespace) -> int:
     print(f"  总耗时:      {elapsed:.1f}s")
     print(f"{'=' * 60}")
 
-    await openai_client.close()
-    await http_client.aclose()
+    await factory.close()
     return 0
 
 

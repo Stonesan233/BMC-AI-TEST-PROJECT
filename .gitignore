@@ -29,6 +29,7 @@ build/
 
 # Local config (keep template)
 config/config.local.yaml
+config/config.yaml
 
 # Shared data (generated at runtime)
 shared/execution_records/

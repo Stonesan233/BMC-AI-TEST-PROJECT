@@ -8,23 +8,25 @@ Query Rewriter: LLM 驱动的查询扩展模块
   import asyncio
   from src.rag.query_rewriter import QueryRewriter
 
-  rw = QueryRewriter()
+  rw = QueryRewriter(
+      model="qwen3.5-plus",
+      api_key="sk-xxx",
+      base_url="https://your-openai-service/api/v1/",
+  )
   results = asyncio.run(rw.rewrite("怎么控制风扇转速"))
   for r in results:
       print(f"  - {r}")
 
-依赖: openai>=1.0.0, python-dotenv, httpx
+依赖: openai>=1.0.0, httpx
 """
 
 import asyncio
 import json
 import logging
-import os
 import re
 from typing import List, Optional
 
 import httpx
-from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
 logger = logging.getLogger("rag.query_rewriter")
@@ -32,10 +34,8 @@ logger = logging.getLogger("rag.query_rewriter")
 # ---------------------------------------------------------------------------
 # 常量
 # ---------------------------------------------------------------------------
-DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-ENV_KEY_NAME = "DASHSCOPE_API_KEY"
-REWRITE_MODEL_ENV = "DASHSCOPE_REWRITE_MODEL"
 DEFAULT_MODEL = "qwen3.5-plus"
+DEFAULT_TIMEOUT = 120.0
 
 MAX_RETRIES = 2
 RETRY_DELAYS = [1, 2]
@@ -214,34 +214,35 @@ class QueryRewriter:
     """
     LLM 驱动的查询扩展器.
 
-    调用 DashScope 兼容 API，将模糊查询扩展为多条精准查询。
+    调用 OpenAI-compatible API，将模糊查询扩展为多条精准查询。
+    base_url 和 api_key 由调用方通过 ProviderConfig 传入，不再硬编码。
     """
 
     def __init__(
         self,
         model: str = DEFAULT_MODEL,
         api_key: Optional[str] = None,
-        base_url: str = DASHSCOPE_BASE_URL,
+        base_url: str = "https://your-openai-service/api/v1/",
+        timeout: float = DEFAULT_TIMEOUT,
     ):
-        load_dotenv()
+        if not api_key:
+            raise ValueError(
+                "QueryRewriter 需要有效的 api_key，"
+                "请通过 config.yaml providers 配置或在初始化时传入"
+            )
 
-        # 模型优先级: 参数 > 环境变量 > 默认
-        env_model = os.getenv(REWRITE_MODEL_ENV, "").strip()
-        self.model = model if model != DEFAULT_MODEL else (env_model or DEFAULT_MODEL)
+        self.model = model
 
-        # API Key
-        resolved_key = api_key or os.getenv(ENV_KEY_NAME, "").strip()
-        if not resolved_key:
-            raise ValueError(f"API Key 未设置: 请设置 {ENV_KEY_NAME} 环境变量或传入 api_key 参数")
-
-        self._http_client = httpx.AsyncClient(timeout=120.0)
+        self._http_client = httpx.AsyncClient(timeout=timeout)
         self._client = AsyncOpenAI(
-            api_key=resolved_key,
+            api_key=api_key,
             base_url=base_url,
             http_client=self._http_client,
         )
 
-        logger.info(f"QueryRewriter 初始化: model={self.model}")
+        logger.info(
+            f"QueryRewriter 初始化: model={model}, base_url={base_url}"
+        )
 
     async def close(self):
         """释放资源。"""

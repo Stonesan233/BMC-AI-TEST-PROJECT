@@ -29,6 +29,8 @@ from jinja2 import Template
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
+from src.core.config import AppConfig, load_config
+from src.core.client_factory import ClientFactory
 from src.core.schemas import ExecutionRecord, StepRecord, StepStatus
 from src.tools.ipmi_tool import IPMITool
 from src.tools.ssh_tool import SSHTool
@@ -330,26 +332,31 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "bmc_command_rag",
             "description": (
-                "根据自然语言描述检索最匹配的 BMC 命令模板。"
-                "当步骤描述模糊、缺少具体命令或参数时，必须优先调用此工具。"
+                "根据自然语言描述检索最匹配的 BMC 命令或 API 模板。\n"
+                "支持 IPMI 和 Redfish 两种接口类型的检索。\n"
+                "当步骤描述模糊、缺少具体命令或参数时，必须优先调用此工具。\n"
+                "- interface_type='auto'(默认): 自动判断查询适合 IPMI 还是 Redfish\n"
+                "- interface_type='ipmi': 仅检索 IPMI 命令\n"
+                "- interface_type='redfish': 仅检索 Redfish API\n"
+                "- interface_type='both': 同时检索两种接口并合并结果"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "operation_description": {
                         "type": "string",
-                        "description": "操作的自然语言描述，如 '使用 CLI 新增用户'",
+                        "description": "操作的自然语言描述，如 '查看BMC固件版本'、'使用IPMI获取用户列表'",
                     },
-                    "interface_hint": {
+                    "interface_type": {
                         "type": "string",
-                        "enum": ["redfish", "cli", "ipmi", "any"],
-                        "default": "any",
-                        "description": "接口类型提示",
+                        "enum": ["auto", "ipmi", "redfish", "both"],
+                        "default": "auto",
+                        "description": "接口类型: auto(自动判断) / ipmi / redfish / both(同时检索)",
                     },
                     "top_k": {
                         "type": "integer",
                         "default": 3,
-                        "description": "返回结果数量",
+                        "description": "每种接口类型返回的结果数量",
                     },
                 },
                 "required": ["operation_description"],
@@ -432,50 +439,49 @@ class ExecAgent:
     MAX_TOOL_ROUNDS = 25
 
     def __init__(self, config: dict):
-        # 初始化日志系统
-        log_dir = config.get("logging", {}).get("file", "./logs")
-        setup_logging(str(Path(log_dir).parent) if Path(log_dir).suffix else log_dir)
+        """
+        初始化 ExecAgent。
 
-        exec_cfg = config.get("agents", {}).get("exec", {})
-        if not exec_cfg:
-            raise ValueError("config 中缺少 agents.exec 配置段，请检查 config.yaml")
-
-        # 必填字段校验
-        for field in ("base_url", "model"):
-            if not exec_cfg.get(field):
-                raise ValueError(f"config[agents.exec].{field} 不能为空，请检查 config.yaml")
-
-        # API Key: 支持环境变量引用（如 ${GLM_API_KEY}）或 .env 文件
-        api_key_raw = exec_cfg.get("api_key", "")
-        logger.debug(f"api_key_raw = '{api_key_raw}'")
-        if api_key_raw.startswith("${") and api_key_raw.endswith("}"):
-            env_var = api_key_raw[2:-1].strip("}")
-            api_key = os.environ.get(env_var, "")
-            logger.debug(f"env_var='{env_var}', from_os_environ={'yes' if api_key else 'no'}")
-            if not api_key:
-                # 尝试从 .env 文件加载
-                api_key = self._load_dotenv(env_var)
-                logger.debug(f"from_dotenv={'yes' if api_key else 'no'}")
-            if not api_key:
-                raise ValueError(
-                    f"环境变量 {env_var} 未设置，请编辑项目根目录 .env 文件或设置环境变量 {env_var}"
-                )
+        Args:
+            config: 支持 dict（旧格式）或 AppConfig（新格式）。
+                    旧 dict 格式兼容保留，内部自动转换。
+        """
+        # 兼容: 传入 dict 时自动加载 AppConfig
+        if isinstance(config, dict):
+            self._app_config = load_config(
+                getattr(self, "_config_path", "config/config.yaml")
+            )
+            self.config = config  # 保留原始 dict 引用（某些工具可能依赖）
+        elif isinstance(config, AppConfig):
+            self._app_config = config
+            # 向后兼容: 部分方法仍读取 dict
+            self.config = config.model_dump()
         else:
-            api_key = api_key_raw
+            raise TypeError(f"config 类型错误: {type(config)}，期望 dict 或 AppConfig")
 
-        self.base_url = exec_cfg["base_url"]
-        self.api_key = api_key
-        self.model = exec_cfg["model"]
-        logger.info(f"API key loaded: '{api_key[:8]}...{api_key[-4:]}' (len={len(api_key)})")
-        self.temperature = float(exec_cfg.get("temperature", 0.1))
-        self.max_tokens = int(exec_cfg.get("max_tokens", 8192))
+        # 初始化日志系统
+        log_cfg = self._app_config.logging
+        log_file = log_cfg.get("file", "./logs/test_framework.log") if isinstance(log_cfg, dict) else "./logs/test_framework.log"
+        setup_logging(str(Path(log_file).parent) if Path(log_file).suffix else log_file)
 
-        self.client = AsyncOpenAI(
-            base_url=self.base_url,
-            api_key=self.api_key,
+        # 客户端工厂
+        self._client_factory = ClientFactory(self._app_config)
+
+        # Exec 组件配置
+        exec_model = self._app_config.models.exec
+        self.base_url = self._app_config.providers[exec_model.provider].base_url
+        self.model = exec_model.model
+        self.temperature = exec_model.temperature
+        self.max_tokens = exec_model.max_tokens
+
+        # 创建 Exec LLM 客户端
+        self.client = self._client_factory.create_for("exec")
+
+        self.shared_dir = (
+            self._app_config.storage.get("shared_dir", "./shared")
+            if isinstance(self._app_config.storage, dict)
+            else "./shared"
         )
-        self.config = config
-        self.shared_dir = config.get("storage", {}).get("shared_dir", "./shared")
 
         # 预加载 system prompt 模板
         self._system_template = Template(
@@ -483,7 +489,7 @@ class ExecAgent:
         )
 
         # BMC 连接信息
-        target = config.get("target", {})
+        target = self._app_config.target
         self.bmc_host = target.get("bmc_host", "127.0.0.1")
         self.bmc_port = target.get("bmc_port", 443)
         self.bmc_user = target.get("bmc_user", "Administrator")
@@ -514,25 +520,27 @@ class ExecAgent:
         )
 
         # RAG 混合检索器 (HybridRetriever + QueryRewriter)
-        rag_cfg = config.get("rag", {})
-        self._rag_enabled = rag_cfg.get("enabled", False)
+        rag_cfg = self._app_config.rag
+        self._rag_enabled = rag_cfg.enabled
         self._retriever: Optional[HybridRetriever] = None
         self._embed_client: Optional[AsyncOpenAI] = None
-        self._embed_http_client: Optional[httpx.AsyncClient] = None
-        self._embed_model = rag_cfg.get("embedding_model", "text-embedding-v4")
-        self._embed_dimension = rag_cfg.get("embedding_dimension", 1024)
-        self._rag_top_k = int(rag_cfg.get("top_k", 3))
-        self._rag_rewrite_enabled = rag_cfg.get("enable_rewrite", True)
-        self._rag_rewrite_model = rag_cfg.get("rewrite_model", "qwen3.5-plus")
-        self._rag_rewrite_weight = float(rag_cfg.get("rewrite_weight", 2.0))
+        self._embed_model = self._app_config.models.embedding.model
+        self._embed_dimension = self._app_config.models.embedding.dimension or 1024
+        self._rag_top_k = rag_cfg.top_k
+        self._rag_rewrite_enabled = rag_cfg.enable_rewrite
+        self._rag_rewrite_weight = rag_cfg.rewrite_weight
+        self._rag_default_interface = rag_cfg.default_interface
+        self._rag_auto_detect = rag_cfg.auto_detect
 
         if self._rag_enabled:
             try:
-                self._init_rag(rag_cfg)
+                self._init_rag()
                 logger.info(
                     f"RAG 模块已启用 | top_k={self._rag_top_k} | "
                     f"rewrite={'on' if self._rag_rewrite_enabled else 'off'} | "
-                    f"rewrite_weight={self._rag_rewrite_weight}"
+                    f"rewrite_weight={self._rag_rewrite_weight} | "
+                    f"default_interface={self._rag_default_interface} | "
+                    f"auto_detect={self._rag_auto_detect}"
                 )
             except Exception as e:
                 logger.warning(f"RAG 初始化失败，已禁用: {e}")
@@ -550,27 +558,6 @@ class ExecAgent:
         logger.info(f"使用模型: {self.model} | base_url: {self.base_url}")
         logger.info(f"参数: temperature={self.temperature}, max_tokens={self.max_tokens}")
         logger.info(f"目标 BMC: {self.bmc_host}:{self.bmc_port} | IPMI: {self.ipmi_host}:{self.ipmi_port} | SSH: {self.ssh_host}:{self.ssh_port}")
-
-    # ==================================================================
-    # .env 文件加载
-    # ==================================================================
-
-    @staticmethod
-    def _load_dotenv(key_name: str) -> str:
-        """从项目根目录 .env 文件中读取指定变量"""
-        env_path = Path(__file__).resolve().parents[2] / ".env"
-        if not env_path.exists():
-            return ""
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            if k.strip() == key_name:
-                return v.strip().strip("'\"")
-        return ""
 
     # ==================================================================
     # httpx 生命周期
@@ -597,66 +584,43 @@ class ExecAgent:
         # 清理 RAG 资源
         if self._retriever:
             await self._retriever.close()
-        if self._embed_client:
-            await self._embed_client.close()
-        if self._embed_http_client and not self._embed_http_client.is_closed:
-            await self._embed_http_client.aclose()
+        # 通过 ClientFactory 统一释放所有客户端
+        await self._client_factory.close()
 
     # ==================================================================
     # RAG 初始化与 Embedding
     # ==================================================================
 
-    def _init_rag(self, rag_cfg: dict) -> None:
+    def _init_rag(self) -> None:
         """初始化 RAG 混合检索器和 Embedding 客户端。"""
-        chroma_path = rag_cfg.get("chroma_path", "./shared/rag_index")
-        collection_name = rag_cfg.get("collection_name", "openubmc_rag")
-        alpha = float(rag_cfg.get("alpha", 0.7))
+        rag_cfg = self._app_config.rag
+
+        # Rewrite 组件模型配置
+        rewrite_model_cfg = self._app_config.models.rewrite
 
         # HybridRetriever（内部集成 QueryRewriter）
         self._retriever = HybridRetriever(
-            chroma_path=chroma_path,
-            collection_name=collection_name,
-            alpha=alpha,
+            chroma_path=rag_cfg.chroma_path,
+            collection_name=rag_cfg.collection_name,
+            alpha=rag_cfg.alpha,
             enable_rewrite=self._rag_rewrite_enabled,
-            rewrite_model=self._rag_rewrite_model,
+            rewrite_provider=self._app_config.providers.get(rewrite_model_cfg.provider),
+            rewrite_model=rewrite_model_cfg.model,
         )
 
-        # Embedding 客户端（DashScope 兼容 API）
-        embed_api_key_raw = rag_cfg.get("embedding_api_key", "${DASHSCOPE_API_KEY}")
-        embed_api_key = self._resolve_api_key(embed_api_key_raw)
-        embed_base_url = rag_cfg.get(
-            "embedding_base_url",
-            "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        )
-
-        self._embed_http_client = httpx.AsyncClient(timeout=120.0)
-        self._embed_client = AsyncOpenAI(
-            api_key=embed_api_key,
-            base_url=embed_base_url,
-            http_client=self._embed_http_client,
-        )
+        # Embedding 客户端（通过 ClientFactory 统一创建）
+        self._embed_client = self._client_factory.create_for("embedding")
 
         logger.info(
-            f"RAG 初始化完成: chroma={chroma_path}, collection={collection_name}, "
-            f"alpha={alpha}, embed_model={self._embed_model}, "
+            f"RAG 初始化完成: chroma={rag_cfg.chroma_path}, "
+            f"collection={rag_cfg.collection_name}, "
+            f"alpha={rag_cfg.alpha}, embed_model={self._embed_model}, "
             f"rewrite={'on' if self._rag_rewrite_enabled else 'off'} "
-            f"(model={self._rag_rewrite_model}, weight={self._rag_rewrite_weight})"
+            f"(model={rewrite_model_cfg.model}, weight={self._rag_rewrite_weight})"
         )
 
-    def _resolve_api_key(self, key_raw: str) -> str:
-        """解析 API Key（支持 ${ENV_VAR} 格式和 .env 文件）。"""
-        if key_raw.startswith("${") and key_raw.endswith("}"):
-            env_var = key_raw[2:-1].strip()
-            key = os.environ.get(env_var, "")
-            if not key:
-                key = self._load_dotenv(env_var)
-            if not key:
-                raise ValueError(f"RAG Embedding API Key 未设置: 环境变量 {env_var}")
-            return key
-        return key_raw
-
     async def _get_query_embedding(self, query: str) -> Optional[List[float]]:
-        """通过 DashScope Embedding API 生成查询向量。"""
+        """通过 Embedding API 生成查询向量。"""
         if not self._embed_client:
             return None
         try:
@@ -1403,18 +1367,25 @@ class ExecAgent:
 
     async def _tool_bmc_command_rag(self, args: dict) -> str:
         """
-        BMC 命令 RAG（HybridRetriever + QueryRewriter）。
+        BMC 命令 RAG（IPMI + Redfish 双接口支持）。
 
         流程:
-        1. 接收模糊操作描述
-        2. 生成查询向量（DashScope Embedding）
-        3. 调用 search_with_rewrite 进行混合检索 + 查询改写
-        4. 格式化返回结构化结果供 LLM 使用
+        1. 接收模糊操作描述 + interface_type 参数
+        2. 自动检测或按指定接口类型决定 doc_type 过滤策略
+        3. 生成查询向量（Embedding API）
+        4. 调用 HybridRetriever 进行混合检索（支持查询改写）
+        5. 格式化返回结构化结果供 LLM 使用
+
+        interface_type 策略:
+        - "auto":  关键词自动检测，决定搜索 IPMI / Redfish / both
+        - "ipmi":  仅搜索 IPMI 文档 (doc_type="ipmi", chunk_type="command")
+        - "redfish": 仅搜索 Redfish 文档 (doc_type="redfish", chunk_type="resource")
+        - "both":  同时搜索两种文档，合并结果
 
         容错: RAG 不可用时优雅降级为关键词匹配，不阻塞执行流程。
         """
         operation = args.get("operation_description", "").strip()
-        hint = args.get("interface_hint", "any")
+        interface_type = args.get("interface_type", self._rag_default_interface)
         top_k = int(args.get("top_k", self._rag_top_k))
 
         # ---- 参数校验 ----
@@ -1425,14 +1396,16 @@ class ExecAgent:
                 ensure_ascii=False,
             )
 
+        # ---- 确定检索接口类型 ----
+        doc_types = self._resolve_doc_types(operation, interface_type)
         logger.info(f"[RAG] === 开始检索 ===")
         logger.info(f"[RAG] 原始查询: '{operation}'")
-        logger.info(f"[RAG] 参数: hint={hint}, top_k={top_k}")
+        logger.info(f"[RAG] 参数: interface_type={interface_type} -> doc_types={doc_types}, top_k={top_k}")
 
         # ---- RAG 未启用: 降级为关键词匹配 ----
         if not self._rag_enabled or not self._retriever:
             logger.warning("[RAG] RAG 未启用或初始化失败，降级为关键词匹配")
-            return self._rag_fallback_keyword(operation, hint)
+            return self._rag_fallback_keyword(operation, interface_type)
 
         # ---- Step 1: 生成查询向量 ----
         query_embedding = None
@@ -1445,59 +1418,158 @@ class ExecAgent:
         except Exception as e:
             logger.warning(f"[RAG] Embedding 生成异常: {e}，将仅使用 BM25 检索")
 
-        # ---- Step 2: 混合检索 + 查询改写 ----
-        try:
-            results = await self._retriever.search_with_rewrite(
-                query=operation,
-                query_embedding=query_embedding,
-                top_k=top_k,
-                chunk_type="command",
-            )
-        except Exception as e:
-            logger.error(f"[RAG] 检索异常: {type(e).__name__}: {e}")
-            logger.info("[RAG] 降级为关键词匹配")
-            return self._rag_fallback_keyword(operation, hint)
+        # ---- Step 2: 按接口类型分别检索 ----
+        all_results: List[Dict[str, Any]] = []
+
+        for doc_type in doc_types:
+            try:
+                chunk_type = "command" if doc_type == "ipmi" else "resource"
+                results = await self._retriever.search_with_rewrite(
+                    query=operation,
+                    query_embedding=query_embedding,
+                    top_k=top_k,
+                    chunk_type=chunk_type,
+                    doc_type=doc_type,
+                )
+                logger.info(f"[RAG] {doc_type} 检索完成: {len(results)} 条结果")
+                all_results.extend(results)
+            except Exception as e:
+                logger.error(f"[RAG] {doc_type} 检索异常: {type(e).__name__}: {e}")
+                continue
+
+        # 按分数排序合并结果
+        all_results.sort(key=lambda r: r.get("score", 0), reverse=True)
+        all_results = all_results[:top_k * len(doc_types)]
+
+        if not all_results:
+            logger.warning("[RAG] 未检索到任何结果，请检查知识库是否已构建")
+            return self._rag_fallback_keyword(operation, interface_type)
 
         # ---- Step 3: 详细日志 ----
-        logger.info(f"[RAG] 检索完成，共 {len(results)} 条结果")
-        if not results:
-            logger.warning("[RAG] 未检索到任何结果，请检查知识库是否已构建")
-        for i, r in enumerate(results[:3], 1):
+        logger.info(f"[RAG] 合并后共 {len(all_results)} 条结果")
+        for i, r in enumerate(all_results[:6], 1):
             meta = r.get("metadata", {})
             score = r.get("score", 0)
+            dt = meta.get("doc_type", "-")
+            ct = meta.get("chunk_type", "-")
             section = meta.get("section", "-")
-            cmd_name = meta.get("command_name", "-")
-            netfn = meta.get("netfn", "-")
-            cmd = meta.get("cmd", "-")
-            desc = meta.get("description", "")
-            logger.info(
-                f"[RAG]   [{i}] score={score:.4f} | section={section} | "
-                f"command={cmd_name} | NetFn={netfn}, Cmd={cmd}"
-            )
-            if desc:
-                logger.debug(f"[RAG]       desc={desc[:80]}")
+            if dt == "redfish":
+                uri = meta.get("resource_uri", "-")
+                method = meta.get("http_method", "-")
+                logger.info(
+                    f"[RAG]   [{i}] score={score:.4f} | {dt}/{ct} | "
+                    f"URI={uri} | Method={method}"
+                )
+            else:
+                cmd_name = meta.get("command_name", "-")
+                netfn = meta.get("netfn", "-")
+                cmd = meta.get("cmd", "-")
+                logger.info(
+                    f"[RAG]   [{i}] score={score:.4f} | {dt}/{ct} | "
+                    f"command={cmd_name} | NetFn={netfn}, Cmd={cmd}"
+                )
 
         # ---- Step 4: 格式化并返回 ----
-        return self._format_rag_results(operation, results, hint)
+        return self._format_rag_results(operation, all_results, interface_type)
+
+    def _resolve_doc_types(self, operation: str, interface_type: str) -> List[str]:
+        """
+        根据 interface_type 参数和查询内容决定搜索哪些文档类型.
+
+        Args:
+            operation: 查询文本
+            interface_type: "auto" / "ipmi" / "redfish" / "both"
+
+        Returns:
+            需要搜索的 doc_type 列表，如 ["ipmi"] / ["redfish"] / ["ipmi", "redfish"]
+        """
+        if interface_type == "ipmi":
+            return ["ipmi"]
+        if interface_type == "redfish":
+            return ["redfish"]
+        if interface_type == "both":
+            return ["ipmi", "redfish"]
+
+        # interface_type == "auto": 关键词检测
+        if not self._rag_auto_detect:
+            return ["ipmi", "redfish"]
+
+        query_lower = operation.lower()
+
+        # 明确的 Redfish 特征词
+        redfish_strong = [
+            "/redfish", "redfish", "rest api", "restful",
+            "get ", "post ", "patch ", "delete ",
+            "uri", "endpoint", "json", "https://",
+            "odatatype", "odata",
+        ]
+        # 明确的 IPMI 特征词
+        ipmi_strong = [
+            "ipmi", "ipmitool", "netfn", "raw 0x",
+            "sel ", "sdr ", "fru ", "mc info", "mc guid",
+            "chassis ", "sensor list",
+        ]
+        # 偏向 Redfish 的场景词
+        redfish_weak = [
+            "账户管理", "会话管理", "用户角色", "redfish",
+            "事件订阅", "更新服务", "任务服务", "证书",
+            "ethernetinterface", "ip地址配置", "网络接口",
+            "virtualmedia", "虚拟媒体", "固件升级",
+        ]
+        # 偏向 IPMI 的场景词
+        ipmi_weak = [
+            "raw命令", "原始命令", "ipmi命令",
+            "风扇模式", "sdr仓库", "传感器读数",
+            "机箱状态", "机箱电源",
+        ]
+
+        redfish_score = 0
+        ipmi_score = 0
+
+        for kw in redfish_strong:
+            if kw in query_lower:
+                redfish_score += 2
+        for kw in ipmi_strong:
+            if kw in query_lower:
+                ipmi_score += 2
+        for kw in redfish_weak:
+            if kw in query_lower:
+                redfish_score += 1
+        for kw in ipmi_weak:
+            if kw in query_lower:
+                ipmi_score += 1
+
+        logger.info(
+            f"[RAG] 自动检测: redfish_score={redfish_score}, "
+            f"ipmi_score={ipmi_score}"
+        )
+
+        # 只有明显偏向某一方时才过滤，否则搜索两者
+        threshold = 2
+        if redfish_score >= threshold and ipmi_score < threshold:
+            return ["redfish"]
+        if ipmi_score >= threshold and redfish_score < threshold:
+            return ["ipmi"]
+        return ["ipmi", "redfish"]
 
     def _format_rag_results(
-        self, operation: str, results: List[Dict[str, Any]], hint: str
+        self, operation: str, results: List[Dict[str, Any]], interface_type: str
     ) -> str:
         """
         格式化 RAG 检索结果为结构化字符串，便于 LLM 直接使用。
 
-        输出格式设计原则:
-        - 每条结果包含: section/command/netfn+cmd/score/notes
-        - document_snippet 截断到 500 字符，避免过长
-        - 无结果时返回明确提示
+        自动识别结果类型（IPMI / Redfish），按对应格式输出:
+        - IPMI 结果: command_name, netfn, cmd, description
+        - Redfish 结果: resource_uri, http_method, description, schema_name
         """
         if not results:
             return json.dumps(
                 {
                     "operation_description": operation,
+                    "interface_type": interface_type,
                     "total_matches": 0,
                     "results": [],
-                    "hint": "RAG 未检索到匹配命令，请根据操作描述自行推测命令，"
+                    "hint": "RAG 未检索到匹配结果，请根据操作描述自行推测命令，"
                             "或尝试使用更具体的关键词重新调用 bmc_command_rag",
                 },
                 ensure_ascii=False,
@@ -1509,27 +1581,48 @@ class ExecAgent:
             meta = r.get("metadata", {})
             doc = r.get("document", "")
             score = r.get("score", 0.0)
+            doc_type = meta.get("doc_type", "ipmi")
 
-            item = {
-                "rank": i + 1,
-                "section": meta.get("section", ""),
-                "command_name": meta.get("command_name", ""),
-                "description": meta.get("description", ""),
-                "netfn": meta.get("netfn", ""),
-                "cmd": meta.get("cmd", ""),
-                "interface_type": meta.get(
-                    "interface_type", hint if hint != "any" else ""
-                ),
-                "score": round(score, 4),
-                "notes": meta.get("notes", ""),
-                "document_snippet": doc[:500] if doc else "",
-            }
+            if doc_type == "redfish":
+                item = {
+                    "rank": i + 1,
+                    "doc_type": "redfish",
+                    "resource_uri": meta.get("resource_uri", ""),
+                    "http_method": meta.get("http_method", ""),
+                    "schema_name": meta.get("schema_name", ""),
+                    "chinese_name": meta.get("chinese_name", ""),
+                    "english_name": meta.get("english_name", ""),
+                    "description": meta.get("description", ""),
+                    "score": round(score, 4),
+                    "document_snippet": doc[:500] if doc else "",
+                }
+            else:
+                # IPMI 结果
+                item = {
+                    "rank": i + 1,
+                    "doc_type": "ipmi",
+                    "command_name": meta.get("command_name", ""),
+                    "section": meta.get("section", ""),
+                    "description": meta.get("description", ""),
+                    "netfn": meta.get("netfn", ""),
+                    "cmd": meta.get("cmd", ""),
+                    "score": round(score, 4),
+                    "notes": meta.get("notes", ""),
+                    "document_snippet": doc[:500] if doc else "",
+                }
             formatted_items.append(item)
+
+        # 统计各类型结果数
+        ipmi_count = sum(1 for r in formatted_items if r["doc_type"] == "ipmi")
+        redfish_count = sum(1 for r in formatted_items if r["doc_type"] == "redfish")
 
         return json.dumps(
             {
                 "operation_description": operation,
+                "interface_type": interface_type,
                 "total_matches": len(formatted_items),
+                "ipmi_results": ipmi_count,
+                "redfish_results": redfish_count,
                 "results": formatted_items,
             },
             ensure_ascii=False,
@@ -1537,71 +1630,156 @@ class ExecAgent:
         )
 
     @staticmethod
-    def _rag_fallback_keyword(operation: str, hint: str) -> str:
-        """RAG 未启用时的关键词匹配降级方案。"""
+    def _rag_fallback_keyword(operation: str, interface_type: str) -> str:
+        """RAG 未启用时的关键词匹配降级方案（IPMI + Redfish 双接口）。"""
         templates = []
+        op_lower = operation.lower()
 
-        if ("用户" in operation or "user" in operation.lower()
-                or "账户" in operation or "account" in operation.lower()):
-            templates.append({
-                "rank": 1,
-                "command_name": "Set User Name",
-                "interface_type": "ipmi",
-                "netfn": "0x06",
-                "cmd": "0x45",
-                "description": "设置用户名",
-                "score": 0.0,
-                "notes": "添加用户前需检查用户数量上限（15个），"
-                         "后续还需 Set User Password + Enable User",
-            })
-        if "电源" in operation or "power" in operation.lower() or "上下电" in operation:
-            templates.append({
-                "rank": 1,
-                "command_name": "Chassis Power Control",
-                "interface_type": "ipmi",
-                "netfn": "0x00",
-                "cmd": "0x02",
-                "description": "机箱电源控制（开机/关机/复位）",
-                "score": 0.0,
-                "notes": "参数: 0x00=关机, 0x01=开机, 0x02=复位, 0x03=硬关机",
-            })
-        if "风扇" in operation or "fan" in operation.lower():
-            templates.append({
-                "rank": 1,
-                "command_name": "Set Fan Mode / Set Fan Speed",
-                "interface_type": "ipmi",
-                "netfn": "0x2e",
-                "cmd": "0x07",
-                "description": "设置风扇运行模式和转速",
-                "score": 0.0,
-                "notes": "自动/手动模式切换，手动模式下可设定目标转速",
-            })
-        if "SEL" in operation or "日志" in operation or "log" in operation.lower():
-            templates.append({
-                "rank": 1,
-                "command_name": "Clear SEL",
-                "interface_type": "ipmi",
-                "netfn": "0x0a",
-                "cmd": "0x47",
-                "description": "清除系统事件日志",
-                "score": 0.0,
-                "notes": "清除前建议先备份日志（Get SEL）",
-            })
+        # -- 搜索范围控制 --
+        search_ipmi = interface_type in ("ipmi", "auto", "both", "any")
+        search_redfish = interface_type in ("redfish", "auto", "both", "any")
+
+        # ---- IPMI 模板 ----
+        if search_ipmi:
+            if ("用户" in operation or "user" in op_lower
+                    or "账户" in operation or "account" in op_lower):
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "ipmi",
+                    "command_name": "Set User Name",
+                    "netfn": "0x06",
+                    "cmd": "0x45",
+                    "description": "设置用户名",
+                    "score": 0.0,
+                    "notes": "添加用户前需检查用户数量上限（15个），"
+                             "后续还需 Set User Password + Enable User",
+                })
+            if "电源" in operation or "power" in op_lower or "上下电" in operation:
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "ipmi",
+                    "command_name": "Chassis Power Control",
+                    "netfn": "0x00",
+                    "cmd": "0x02",
+                    "description": "机箱电源控制（开机/关机/复位）",
+                    "score": 0.0,
+                    "notes": "参数: 0x00=关机, 0x01=开机, 0x02=复位, 0x03=硬关机",
+                })
+            if "风扇" in operation or "fan" in op_lower:
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "ipmi",
+                    "command_name": "Set Fan Mode / Set Fan Speed",
+                    "netfn": "0x2e",
+                    "cmd": "0x07",
+                    "description": "设置风扇运行模式和转速",
+                    "score": 0.0,
+                    "notes": "自动/手动模式切换，手动模式下可设定目标转速",
+                })
+            if "SEL" in operation or "日志" in operation or "log" in op_lower:
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "ipmi",
+                    "command_name": "Clear SEL",
+                    "netfn": "0x0a",
+                    "cmd": "0x47",
+                    "description": "清除系统事件日志",
+                    "score": 0.0,
+                    "notes": "清除前建议先备份日志（Get SEL）",
+                })
+            if ("固件" in operation or "版本" in operation or "firmware" in op_lower
+                    or "version" in op_lower):
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "ipmi",
+                    "command_name": "Get Device ID",
+                    "netfn": "0x06",
+                    "cmd": "0x01",
+                    "description": "获取设备信息（制造商、固件版本、IPMI版本）",
+                    "score": 0.0,
+                    "notes": "返回包含固件版本号的设备信息",
+                })
+
+        # ---- Redfish 模板 ----
+        if search_redfish:
+            if ("用户" in operation or "account" in op_lower):
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "redfish",
+                    "resource_uri": "/redfish/v1/AccountService/Accounts",
+                    "http_method": "GET,POST",
+                    "schema_name": "AccountService",
+                    "chinese_name": "账户管理",
+                    "description": "查询/创建用户账户",
+                    "score": 0.0,
+                })
+            if "电源" in operation or "power" in op_lower:
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "redfish",
+                    "resource_uri": "/redfish/v1/Systems/{SystemId}",
+                    "http_method": "GET",
+                    "schema_name": "ComputerSystem",
+                    "chinese_name": "系统资源",
+                    "description": "查询系统电源状态（PowerState字段）",
+                    "score": 0.0,
+                })
+            if ("固件" in operation or "版本" in operation or "firmware" in op_lower
+                    or "version" in op_lower):
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "redfish",
+                    "resource_uri": "/redfish/v1/Managers/{ManagerId}",
+                    "http_method": "GET",
+                    "schema_name": "Manager",
+                    "chinese_name": "管理控制器",
+                    "description": "查询 BMC 固件版本（FirmwareVersion 字段）",
+                    "score": 0.0,
+                })
+            if "传感器" in operation or "温度" in operation or "sensor" in op_lower:
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "redfish",
+                    "resource_uri": "/redfish/v1/Chassis/{ChassisId}/Thermal",
+                    "http_method": "GET",
+                    "schema_name": "Thermal",
+                    "chinese_name": "散热管理",
+                    "description": "查询温度和风扇传感器数据",
+                    "score": 0.0,
+                })
+            if "网络" in operation or "ip地址" in operation or "网络" in operation:
+                templates.append({
+                    "rank": len(templates) + 1,
+                    "doc_type": "redfish",
+                    "resource_uri": "/redfish/v1/Managers/{ManagerId}/EthernetInterfaces",
+                    "http_method": "GET,PATCH",
+                    "schema_name": "EthernetInterface",
+                    "chinese_name": "网络接口",
+                    "description": "查询/修改 BMC 网络接口配置",
+                    "score": 0.0,
+                })
 
         if not templates:
             templates.append({
                 "rank": 1,
+                "doc_type": "unknown",
                 "command_name": "(未找到匹配)",
-                "interface_type": hint if hint != "any" else "unknown",
+                "interface_type": interface_type if interface_type != "auto" else "unknown",
                 "description": "RAG 未启用，关键词匹配未命中",
                 "score": 0.0,
                 "notes": "请启用 RAG 以获得更准确的命令推荐",
             })
 
+        ipmi_count = sum(1 for t in templates if t.get("doc_type") == "ipmi")
+        redfish_count = sum(1 for t in templates if t.get("doc_type") == "redfish")
+
         return json.dumps(
             {
                 "operation_description": operation,
+                "interface_type": interface_type,
                 "total_matches": len(templates),
+                "ipmi_results": ipmi_count,
+                "redfish_results": redfish_count,
                 "results": templates,
                 "fallback": True,
                 "message": "RAG 未启用，使用关键词匹配降级方案",

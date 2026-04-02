@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import chromadb
 
 from src.rag.query_rewriter import QueryRewriter
+from src.core.config import ProviderConfig
 
 logger = logging.getLogger("rag.retriever")
 
@@ -54,6 +55,7 @@ class HybridRetriever:
         collection_name: str = "openubmc_rag",
         alpha: float = 0.7,
         enable_rewrite: bool = False,
+        rewrite_provider: Optional[ProviderConfig] = None,
         rewrite_model: str = "qwen3.5-plus",
     ):
         self.alpha = alpha
@@ -68,12 +70,23 @@ class HybridRetriever:
         # Query Rewriter (可选)
         self.rewriter: Optional[QueryRewriter] = None
         if enable_rewrite:
-            try:
-                self.rewriter = QueryRewriter(model=rewrite_model)
-                logger.info(f"Query Rewriter 已启用 (model={rewrite_model})")
-            except Exception as e:
-                logger.warning(f"Query Rewriter 初始化失败，已禁用: {e}")
-                self.rewriter = None
+            if rewrite_provider is None:
+                logger.warning("Query Rewriter 未提供 provider 配置，已禁用")
+            else:
+                try:
+                    self.rewriter = QueryRewriter(
+                        model=rewrite_model,
+                        api_key=rewrite_provider.api_key,
+                        base_url=rewrite_provider.base_url,
+                        timeout=rewrite_provider.timeout,
+                    )
+                    logger.info(
+                        f"Query Rewriter 已启用 "
+                        f"(model={rewrite_model}, base_url={rewrite_provider.base_url})"
+                    )
+                except Exception as e:
+                    logger.warning(f"Query Rewriter 初始化失败，已禁用: {e}")
+                    self.rewriter = None
 
     # ==================================================================
     # 文档加载
