@@ -6,11 +6,17 @@ openUBMC AI 测试框架 - 文件处理工具模块
 """
 
 import json
+import logging
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
 from src.core.schemas import ExecutionRecord, TestResult, Evidence
+
+import yaml
+
+logger = logging.getLogger("file_handler")
 
 
 # ============================================================
@@ -279,3 +285,260 @@ def _extract_response_body(raw_stdout: Optional[str]) -> Optional[str]:
         pass
 
     return text
+
+
+# ============================================================
+# Excel -> YAML 用例转换
+# ============================================================
+
+# Excel 列名 -> 标准 YAML 字段名的映射
+_EXCEL_COLUMN_MAP: Dict[str, List[str]] = {
+    "用例_编号": ["用例_编号", "用例编号", "编号", "case_id", "id"],
+    "用例_名称": ["用例_名称", "用例名称", "名称", "case_name", "title", "测试名称"],
+    "测试类型": ["测试类型", "类型", "test_type", "type"],
+    "优先级": ["优先级", "priority", "级别"],
+    "预置条件": ["预置条件", "前置条件", "前提条件", "prerequisites", " precondition"],
+    "测试步骤": ["测试步骤", "步骤", "steps", "step", "操作步骤", "测试操作"],
+    "预期结果": ["预期结果", "期望结果", "expected", "期望", "预期"],
+    "notes": ["notes", "备注", "说明", "note", "注释"],
+}
+
+
+def _map_excel_columns(df: "pd.DataFrame") -> Dict[str, str]:
+    """
+    将 DataFrame 实际列名映射到标准字段名。
+
+    返回: {"用例_编号": "实际列名", ...}
+    """
+    mapping: Dict[str, str] = {}
+    actual_cols = list(df.columns)
+
+    for std_name, aliases in _EXCEL_COLUMN_MAP.items():
+        for alias in aliases:
+            for col in actual_cols:
+                if col.strip().lower() == alias.strip().lower():
+                    mapping[std_name] = col
+                    break
+            if std_name in mapping:
+                break
+
+    return mapping
+
+
+def _safe_filename(text: str) -> str:
+    """生成安全的文件名（保留字母、数字、下划线、连字符、中文）"""
+    safe = re.sub(r'[^\w\u4e00-\u9fff\-]', '_', text)
+    return safe[:80] if len(safe) > 80 else safe
+
+
+class _BlockScalarStr(str):
+    """标记字符串，让 YAML dumper 使用 | 块标量输出（非 |-）"""
+    def __new__(cls, value):
+        # 确保以换行结尾，这样 YAML 输出为 | 而非 |-
+        if value and not value.endswith('\n'):
+            value = value + '\n'
+        return super().__new__(cls, value)
+
+
+def _represent_block_scalar(dumper: yaml.Dumper, data: _BlockScalarStr):
+    return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+
+
+_YamlDumper = type(
+    "YamlDumper",
+    (yaml.Dumper,),
+    {"increase_indent": lambda self, flow=False, indentless=False: super(type(self), self).increase_indent(flow, False)},
+)
+_YamlDumper.add_representer(_BlockScalarStr, _represent_block_scalar)
+
+
+def _cell_text(row, col_name: str) -> str:
+    """安全提取单元格文本，NaN 返回空字符串"""
+    if col_name not in row.index:
+        return ""
+    val = row[col_name]
+    if val is None or (isinstance(val, float) and val != val):  # NaN check
+        return ""
+    return str(val).strip()
+
+
+def _build_case_dict(row, col_map: Dict[str, str], row_index: int) -> Dict[str, Any]:
+    """
+    将 DataFrame 一行转换为 YAML 用例字典。
+
+    预置条件/测试步骤/预期结果 使用 | 块标量保留原始自然文本。
+    """
+    def _get(key: str) -> str:
+        actual_col = col_map.get(key)
+        return _cell_text(row, actual_col) if actual_col else ""
+
+    # 用例_编号（必须）
+    case_id = _get("用例_编号") or f"TC-EXCEL-{row_index + 1:03d}"
+
+    # 用例_名称
+    case_name = _get("用例_名称") or case_id
+
+    # 测试类型 / 优先级
+    test_type = _get("测试类型") or "功能测试"
+    priority = _get("优先级") or "P1"
+
+    # 预置条件（块标量）
+    preconditions_raw = _get("预置条件")
+    preconditions = _BlockScalarStr(preconditions_raw) if preconditions_raw else ""
+
+    # 测试步骤（块标量）
+    steps_raw = _get("测试步骤")
+    steps = _BlockScalarStr(steps_raw) if steps_raw else ""
+
+    # 预期结果（块标量）
+    expected_raw = _get("预期结果")
+    expected = _BlockScalarStr(expected_raw) if expected_raw else ""
+
+    # notes
+    notes = _get("notes")
+
+    case: Dict[str, Any] = {
+        "用例_编号": case_id,
+        "用例_名称": case_name,
+        "测试类型": test_type,
+        "优先级": priority,
+    }
+    if preconditions:
+        case["预置条件"] = preconditions
+    if steps:
+        case["测试步骤"] = steps
+    if expected:
+        case["预期结果"] = expected
+    if notes:
+        case["notes"] = notes
+
+    return case
+
+
+def _convert_sheet(
+    df: "pd.DataFrame",
+    sheet_name: str,
+    output_dir: Path,
+) -> List[str]:
+    """转换单个 Sheet，返回生成的文件路径列表"""
+    import pandas as pd
+
+    col_map = _map_excel_columns(df)
+    logger.info("Sheet '%s': 检测到列映射 %s", sheet_name, col_map)
+
+    if "用例_编号" not in col_map and "用例_名称" not in col_map:
+        logger.warning("Sheet '%s': 未找到 '编号' 或 '名称' 列，跳过", sheet_name)
+        return []
+
+    generated: List[str] = []
+    for idx, row in df.iterrows():
+        try:
+            case = _build_case_dict(row, col_map, idx)
+            case_id = case["用例_编号"]
+
+            filename = _safe_filename(case_id) + ".yaml"
+            output_path = output_dir / filename
+
+            # 文件名冲突时追加序号
+            counter = 1
+            while output_path.exists():
+                output_path = output_dir / f"{_safe_filename(case_id)}_{counter}.yaml"
+                counter += 1
+
+            # 写入 YAML
+            yaml_str = yaml.dump(
+                case,
+                Dumper=_YamlDumper,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+                width=120,
+            )
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(yaml_str)
+
+            generated.append(str(output_path))
+            print(f"  [OK] {case_id} -> {output_path.name}")
+
+        except Exception as e:
+            logger.error("行 %d 转换失败: %s", idx + 2, e)
+            continue
+
+    return generated
+
+
+def convert_excel_to_yaml(
+    excel_path: str,
+    output_dir: str = "testcases",
+) -> List[str]:
+    """
+    将 Excel 文件转换为标准 YAML 用例文件。
+
+    每行生成一个 YAML 文件，使用 | 块标量保留预置条件/测试步骤/预期结果的原始自然文本。
+    支持多 Sheet，列名自动识别。
+
+    Args:
+        excel_path: Excel 文件路径（.xlsx）
+        output_dir: YAML 输出目录，默认 testcases/
+
+    Returns:
+        生成的 YAML 文件路径列表
+    """
+    import pandas as pd
+
+    excel = Path(excel_path)
+    out = Path(output_dir)
+
+    if not excel.exists():
+        print(f"[ERROR] Excel 文件不存在: {excel_path}")
+        return []
+
+    out.mkdir(parents=True, exist_ok=True)
+    print(f"[Excel] 读取文件: {excel}")
+
+    try:
+        xls = pd.ExcelFile(excel, engine='openpyxl')
+    except Exception as e:
+        print(f"[ERROR] 无法读取 Excel 文件: {e}")
+        return []
+
+    all_generated: List[str] = []
+
+    for sheet_name in xls.sheet_names:
+        print(f"[Excel] 处理 Sheet: '{sheet_name}'")
+        try:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            df = df.dropna(how='all')
+            if df.empty:
+                print(f"  Sheet '{sheet_name}' 为空，跳过")
+                continue
+            generated = _convert_sheet(df, sheet_name, out)
+            all_generated.extend(generated)
+        except Exception as e:
+            logger.error("Sheet '%s' 处理失败: %s", sheet_name, e)
+            continue
+
+    return all_generated
+
+
+def convert_excel_dir_to_yaml(
+    input_dir: str,
+    output_dir: str = "testcases",
+) -> List[str]:
+    """批量转换目录下所有 Excel 文件"""
+    in_dir = Path(input_dir)
+    if not in_dir.is_dir():
+        print(f"[ERROR] 输入目录不存在: {input_dir}")
+        return []
+
+    excel_files = list(in_dir.glob("*.xlsx")) + list(in_dir.glob("*.xls"))
+    if not excel_files:
+        print(f"[WARN] 目录中未找到 Excel 文件: {input_dir}")
+        return []
+
+    print(f"[Excel] 找到 {len(excel_files)} 个 Excel 文件")
+    all_generated: List[str] = []
+    for ef in excel_files:
+        generated = convert_excel_to_yaml(str(ef), output_dir)
+        all_generated.extend(generated)
+    return all_generated

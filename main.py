@@ -31,6 +31,8 @@ from src.core.schemas import (
     StepStatus,
 )
 from src.utils.file_handler import (
+    convert_excel_dir_to_yaml,
+    convert_excel_to_yaml,
     ensure_shared_dirs,
     generate_human_report,
     save_execution_record,
@@ -291,8 +293,29 @@ async def main_async(args: argparse.Namespace) -> int:
     shared_dir = config.get("storage", {}).get("shared_dir", "./shared")
     ensure_shared_dirs(shared_dir)
 
-    # 4. 加载用例
-    cases = load_test_cases(args.cases)
+    # 4. Excel 用例转换（如果提供 --excel）
+    case_paths = list(args.cases) if args.cases else []
+    if args.excel:
+        print(f"\n[Excel] 开始转换 Excel 用例...")
+        excel_yaml_dir = Path(shared_dir) / "excel_cases"
+        for ep in args.excel:
+            p = Path(ep)
+            if p.is_file():
+                generated = convert_excel_to_yaml(str(p), str(excel_yaml_dir))
+            elif p.is_dir():
+                generated = convert_excel_dir_to_yaml(str(p), str(excel_yaml_dir))
+            else:
+                print(f"[ERROR] Excel 路径不存在: {ep}")
+                continue
+            case_paths.extend(generated)
+        print(f"[Excel] 转换完成，共 {len(case_paths)} 个用例文件\n")
+
+    if not case_paths:
+        print("[ERROR] 未提供任何用例（--cases 或 --excel 至少需要一个）")
+        return 1
+
+    # 5. 加载用例
+    cases = load_test_cases(case_paths)
 
     # 启动信息
     print(f"\nopenUBMC AI 测试框架")
@@ -307,14 +330,14 @@ async def main_async(args: argparse.Namespace) -> int:
         print("[WARN] 未加载到任何测试用例，退出")
         return 0
 
-    # 5. 初始化 Exec Agent
+    # 6. 初始化 Exec Agent
     try:
         exec_agent = ExecAgent(config)
     except ValueError as e:
         print(f"[ERROR] Exec Agent 初始化失败: {e}")
         return 1
 
-    # 6. 分组执行
+    # 7. 分组执行
     batches = group_cases_by_batch(cases, exec_batch_size)
     print(f"分为 {len(batches)} 个批次执行\n")
 
@@ -326,7 +349,7 @@ async def main_async(args: argparse.Namespace) -> int:
     finally:
         await exec_agent.close()
 
-    # 7. 执行摘要
+    # 8. 执行摘要
     elapsed = (datetime.now() - start_time).total_seconds()
     passed = sum(1 for r in all_results if r.get("overall_result") == "PASS")
     failed = sum(1 for r in all_results if r.get("overall_result") == "FAIL")
@@ -362,8 +385,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cases",
         nargs="+",
-        required=True,
-        help="测试用例路径（支持多个文件）"
+        default=[],
+        help="YAML 测试用例路径（支持多个文件）"
+    )
+    parser.add_argument(
+        "--excel",
+        nargs="+",
+        help="Excel 用例路径（.xlsx 文件或目录，自动转换为 YAML）"
     )
     return parser.parse_args()
 
