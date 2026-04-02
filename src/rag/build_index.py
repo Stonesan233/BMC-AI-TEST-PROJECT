@@ -34,7 +34,7 @@ import chromadb
 from openai import AsyncOpenAI
 from tqdm import tqdm
 
-from src.core.config import load_config
+from src.core.config import load_config, get_component_config
 from src.core.client_factory import ClientFactory
 from src.rag.parsers import get_parser
 
@@ -86,6 +86,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--persist_dir", type=str, default=DEFAULT_PERSIST_DIR,
         help=f"Chroma 持久化目录 (默认: {DEFAULT_PERSIST_DIR})",
+    )
+    parser.add_argument(
+        "--rebuild", action="store_true",
+        help="强制重建向量库（删除旧 collection 后重新创建）",
     )
     return parser.parse_args()
 
@@ -255,6 +259,80 @@ async def _embed_and_store(
 
 
 # ---------------------------------------------------------------------------
+# Embedding 模型签名（检测模型变更，提示用户 --rebuild）
+# ---------------------------------------------------------------------------
+
+_SIGNATURE_FILENAME = "_embedding_signature.json"
+
+
+def _save_embedding_signature(
+    persist_dir: str,
+    provider: str,
+    model: str,
+    dimension: int,
+) -> None:
+    """将当前 Embedding 配置签名写入向量库目录"""
+    import json
+    sig_path = Path(persist_dir) / _SIGNATURE_FILENAME
+    sig_path.parent.mkdir(parents=True, exist_ok=True)
+    sig = {
+        "provider": provider,
+        "model": model,
+        "dimension": dimension,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    sig_path.write_text(json.dumps(sig, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info(f"Embedding 签名已保存: {sig}")
+
+
+def _load_embedding_signature(persist_dir: str) -> Optional[Dict[str, Any]]:
+    """读取已保存的 Embedding 配置签名"""
+    import json
+    sig_path = Path(persist_dir) / _SIGNATURE_FILENAME
+    if not sig_path.exists():
+        return None
+    try:
+        return json.loads(sig_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _check_embedding_change(
+    persist_dir: str,
+    provider: str,
+    model: str,
+    dimension: int,
+) -> bool:
+    """
+    检测 Embedding 模型是否发生变更。
+
+    Returns:
+        True = 模型已变更（需要重建），False = 未变更或无历史签名
+    """
+    saved = _load_embedding_signature(persist_dir)
+    if saved is None:
+        logger.info("未找到历史 Embedding 签名（首次构建）")
+        return False
+
+    changed = False
+    reasons = []
+    for key, current_val in [("provider", provider), ("model", model), ("dimension", dimension)]:
+        saved_val = saved.get(key)
+        if saved_val is not None and saved_val != current_val:
+            changed = True
+            reasons.append(f"  {key}: {saved_val} --> {current_val}")
+
+    if changed:
+        print(f"\n[WARN] 检测到 Embedding 模型变更:")
+        for r in reasons:
+            print(r)
+        print(f"  向量库与当前模型不兼容，请使用 --rebuild 重建:")
+        print(f"  python -m src.rag.build_index --directory <docs> --rebuild\n")
+
+    return changed
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 async def main_async(args: argparse.Namespace) -> int:
@@ -287,7 +365,28 @@ async def main_async(args: argparse.Namespace) -> int:
     persist_dir = args.persist_dir
     Path(persist_dir).mkdir(parents=True, exist_ok=True)
 
+    # 检测 Embedding 模型变更
+    model_changed = _check_embedding_change(
+        persist_dir, comp.provider_name, comp.model, embed_dimension
+    )
+
     chroma_client = chromadb.PersistentClient(path=persist_dir)
+
+    if args.rebuild:
+        # 强制重建：删除旧 collection
+        try:
+            chroma_client.delete_collection(args.collection_name)
+            print(f"[OK] 已删除旧 collection '{args.collection_name}' (--rebuild)")
+        except Exception:
+            pass  # collection 不存在时忽略
+
+    if model_changed and not args.rebuild:
+        print(f"[ERROR] Embedding 模型已变更，现有向量库不兼容。")
+        print(f"        请添加 --rebuild 参数重建向量库：")
+        print(f"        python -m src.rag.build_index --directory <docs> --rebuild")
+        await factory.close()
+        return 1
+
     collection = chroma_client.get_or_create_collection(
         name=args.collection_name,
         metadata={"hnsw:space": "cosine"},
@@ -337,8 +436,14 @@ async def main_async(args: argparse.Namespace) -> int:
     print(f"  DB 总 chunks: {collection.count()}")
     print(f"  Collection:  {args.collection_name}")
     print(f"  持久化目录:  {persist_dir}")
+    print(f"  Embedding:   {comp.provider_name}/{comp.model} (dim={embed_dimension})")
     print(f"  总耗时:      {elapsed:.1f}s")
     print(f"{'=' * 60}")
+
+    # 6. 保存 Embedding 签名（用于后续变更检测）
+    _save_embedding_signature(
+        persist_dir, comp.provider_name, comp.model, embed_dimension
+    )
 
     await factory.close()
     return 0

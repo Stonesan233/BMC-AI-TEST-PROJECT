@@ -57,6 +57,22 @@ providers:
   #       temperature: 0.1
   #       max_tokens: 4096
 
+  # ---- 内网 Embedding 服务（独立部署 Embedding 模型时使用） ----
+  # 使用方法:
+  #   1. 取消下方注释，填入内网服务地址和 API Key
+  #   2. 将 models.embedding.provider 改为 "embedding-internal"
+  #   3. 运行 python -m src.rag.build_index --directory <docs> --rebuild
+  #
+  # embedding-internal:
+  #   base_url: "https://your-embedding-server:8000/v1/"
+  #   api_key: "${EMBEDDING_API_KEY}"
+  #   timeout: 60.0
+  #   models:
+  #     bge-large-zh-v1.5:                    # 替换为内网实际模型名
+  #       dimension: 1024                      # 必须与模型输出维度一致
+  #     bge-m3:                                # 或使用多语言模型
+  #       dimension: 1024
+
 
 # ----- 2. 组件模型分配（每个组件指定使用哪个 provider 的哪个 model） -----
 #
@@ -77,6 +93,7 @@ models:
     model: "glm-5"
 
   # Embedding（向量检索用）
+  # 切换模型后必须重建向量库: python -m src.rag.build_index --directory <docs> --rebuild
   embedding:
     provider: "default"
     model: "text-embedding-v4"

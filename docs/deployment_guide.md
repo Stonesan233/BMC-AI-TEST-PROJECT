@@ -572,6 +572,75 @@ ls shared/rag_index/
 
 ---
 
+## 9.5 Embedding 模型切换与向量库重建
+
+从 DashScope（云端）切换到内网私有 Embedding 模型时，**必须重建向量库**，否则向量维度不兼容导致检索结果异常。
+
+### 切换步骤
+
+**第一步：修改配置**
+
+编辑 `config/config.yaml`，修改 `providers` 和 `models.embedding`：
+
+```yaml
+providers:
+  # 新增内网 Embedding 服务
+  embedding-internal:
+    base_url: "https://your-embedding-server:8000/v1/"
+    api_key: "${EMBEDDING_API_KEY}"
+    timeout: 60.0
+    models:
+      bge-large-zh-v1.5:
+        dimension: 1024
+
+# 修改 embedding 组件指向新 provider
+models:
+  embedding:
+    provider: "embedding-internal"
+    model: "bge-large-zh-v1.5"
+```
+
+**第二步：重建向量库**
+
+```bash
+# --rebuild 会删除旧 collection 并重新创建
+python -m src.rag.build_index --directory <文档目录> --rebuild
+```
+
+**第三步：验证**
+
+```bash
+# 查看向量库签名文件，确认模型信息已更新
+cat shared/rag_index/_embedding_signature.json
+```
+
+### 自动变更检测
+
+框架内置 Embedding 模型变更检测。如果配置中的 Embedding 模型与向量库签名不一致，`build_index` 会拒绝执行并提示：
+
+```
+[WARN] 检测到 Embedding 模型变更:
+  model: text-embedding-v4 --> bge-large-zh-v1.5
+  向量库与当前模型不兼容，请使用 --rebuild 重建:
+  python -m src.rag.build_index --directory <docs> --rebuild
+
+[ERROR] Embedding 模型已变更，现有向量库不兼容。
+        请添加 --rebuild 参数重建向量库
+```
+
+### 常见内网 Embedding 模型参考
+
+| 模型 | 维度 | 说明 |
+|------|------|------|
+| bge-large-zh-v1.5 | 1024 | 中文优化，推荐 |
+| bge-m3 | 1024 | 多语言，支持中英混合 |
+| bce-embedding-base_v1 | 768 | 中文通用 |
+| gte-qwen2-1.5b-instruct | 1536 | 通义系列 |
+
+**注意**：切换到不同维度的模型时，必须使用 `--rebuild`，不可跳过。
+
+---
+
 ## 10. 常见问题排查
 
 ### 10.1 配置相关
