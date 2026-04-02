@@ -472,13 +472,17 @@ def convert_excel_to_yaml(
     output_dir: str = "testcases",
 ) -> List[str]:
     """
-    将 Excel 文件转换为标准 YAML 用例文件。
+    将 Excel 文件或目录转换为标准 YAML 用例文件。
 
-    每行生成一个 YAML 文件，使用 | 块标量保留预置条件/测试步骤/预期结果的原始自然文本。
+    自动识别输入类型：
+    - 单个 .xlsx/.xls 文件：直接转换
+    - 目录：遍历其中所有 Excel 文件逐个转换
+
+    每行生成一个 YAML 文件，预置条件/测试步骤/预期结果使用 | 块标量保留原始自然文本。
     支持多 Sheet，列名自动识别。
 
     Args:
-        excel_path: Excel 文件路径（.xlsx）
+        excel_path: Excel 文件路径或包含 Excel 文件的目录
         output_dir: YAML 输出目录，默认 testcases/
 
     Returns:
@@ -486,31 +490,46 @@ def convert_excel_to_yaml(
     """
     import pandas as pd
 
-    excel = Path(excel_path)
-    out = Path(output_dir)
+    path = Path(excel_path)
 
-    if not excel.exists():
-        print(f"[ERROR] Excel 文件不存在: {excel_path}")
+    if not path.exists():
+        logger.error("路径不存在: %s", excel_path)
         return []
 
+    # 目录：遍历其中所有 Excel 文件
+    if path.is_dir():
+        excel_files = sorted(path.glob("*.xlsx")) + sorted(path.glob("*.xls"))
+        if not excel_files:
+            logger.warning("目录中未找到 Excel 文件: %s", excel_path)
+            return []
+        logger.info("目录模式: 找到 %d 个 Excel 文件", len(excel_files))
+        all_generated: List[str] = []
+        for ef in excel_files:
+            all_generated.extend(
+                convert_excel_to_yaml(str(ef), output_dir)
+            )
+        return all_generated
+
+    # 单文件模式
+    out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    print(f"[Excel] 读取文件: {excel}")
+    logger.info("读取 Excel: %s", path)
 
     try:
-        xls = pd.ExcelFile(excel, engine='openpyxl')
+        xls = pd.ExcelFile(path, engine='openpyxl')
     except Exception as e:
-        print(f"[ERROR] 无法读取 Excel 文件: {e}")
+        logger.error("无法读取 Excel 文件: %s", e)
         return []
 
     all_generated: List[str] = []
 
     for sheet_name in xls.sheet_names:
-        print(f"[Excel] 处理 Sheet: '{sheet_name}'")
+        logger.info("处理 Sheet: '%s'", sheet_name)
         try:
             df = pd.read_excel(xls, sheet_name=sheet_name)
             df = df.dropna(how='all')
             if df.empty:
-                print(f"  Sheet '{sheet_name}' 为空，跳过")
+                logger.info("Sheet '%s' 为空，跳过", sheet_name)
                 continue
             generated = _convert_sheet(df, sheet_name, out)
             all_generated.extend(generated)
@@ -518,27 +537,4 @@ def convert_excel_to_yaml(
             logger.error("Sheet '%s' 处理失败: %s", sheet_name, e)
             continue
 
-    return all_generated
-
-
-def convert_excel_dir_to_yaml(
-    input_dir: str,
-    output_dir: str = "testcases",
-) -> List[str]:
-    """批量转换目录下所有 Excel 文件"""
-    in_dir = Path(input_dir)
-    if not in_dir.is_dir():
-        print(f"[ERROR] 输入目录不存在: {input_dir}")
-        return []
-
-    excel_files = list(in_dir.glob("*.xlsx")) + list(in_dir.glob("*.xls"))
-    if not excel_files:
-        print(f"[WARN] 目录中未找到 Excel 文件: {input_dir}")
-        return []
-
-    print(f"[Excel] 找到 {len(excel_files)} 个 Excel 文件")
-    all_generated: List[str] = []
-    for ef in excel_files:
-        generated = convert_excel_to_yaml(str(ef), output_dir)
-        all_generated.extend(generated)
     return all_generated

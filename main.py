@@ -31,7 +31,6 @@ from src.core.schemas import (
     StepStatus,
 )
 from src.utils.file_handler import (
-    convert_excel_dir_to_yaml,
     convert_excel_to_yaml,
     ensure_shared_dirs,
     generate_human_report,
@@ -300,13 +299,10 @@ async def main_async(args: argparse.Namespace) -> int:
         excel_yaml_dir = Path(shared_dir) / "excel_cases"
         for ep in args.excel:
             p = Path(ep)
-            if p.is_file():
-                generated = convert_excel_to_yaml(str(p), str(excel_yaml_dir))
-            elif p.is_dir():
-                generated = convert_excel_dir_to_yaml(str(p), str(excel_yaml_dir))
-            else:
+            if not p.exists():
                 print(f"[ERROR] Excel 路径不存在: {ep}")
                 continue
+            generated = convert_excel_to_yaml(str(p), str(excel_yaml_dir))
             case_paths.extend(generated)
         print(f"[Excel] 转换完成，共 {len(case_paths)} 个用例文件\n")
 
