@@ -1,5 +1,9 @@
 # ======================================================================
-# openUBMC AI 测试框架 - 统一配置文件
+# openUBMC AI 测试框架 - 配置文件模板
+#
+# 使用方法:
+#   cp config/config_example.yaml config/config.yaml
+#   然后修改 config.yaml 填入实际的服务地址和 API Key
 #
 # 设计原则:
 #   1. 所有 LLM / Embedding 服务统一为 providers，支持任意 OpenAI-compatible API
@@ -10,51 +14,77 @@
 
 
 # ----- 1. 服务提供者（可定义多个，按需引用） -----
-# 每个 provider 只需要 base_url 和 api_key，其余走 OpenAI 兼容协议
+#
+# 每个 provider 包含:
+#   base_url  - OpenAI 兼容 API 地址（必填）
+#   api_key   - API 密钥，支持 ${ENV_VAR} 引用或直接填写（必填）
+#   timeout   - HTTP 超时秒数（默认 120）
+#   models    - 该 provider 下可用的模型列表及参数（必填）
+#
+# models 下的每个模型包含:
+#   temperature  - 采样温度，0.0~1.0（默认 0.1）
+#   max_tokens   - 最大输出 token 数（默认 4096）
+#   dimension    - 向量维度，仅 Embedding 模型需要
+#
 providers:
 
-  # 默认服务（示例占位符，部署时替换为实际地址）
+  # ---- 默认服务（占位示例，部署时替换为实际地址） ----
   default:
     base_url: "https://your-openai-service/api/v1/"
     api_key: "${YOUR_API_KEY}"             # 推荐: 环境变量引用
     timeout: 120.0                         # HTTP 超时（秒）
 
-  # 第二个服务（可选，如需 Exec / Judge 分用不同后端）
+    models:
+      MiniMax-M2.5:                        # Exec Agent 使用
+        temperature: 0.1
+        max_tokens: 8192
+      glm-5:                               # Judge Agent 使用
+        temperature: 0.1
+        max_tokens: 8192
+      text-embedding-v4:                   # Embedding 使用
+        dimension: 1024                    # 向量维度（必须）
+      qwen3.5-plus:                        # Query Rewriter 使用
+        temperature: 0.3
+        max_tokens: 256
+
+  # ---- 第二个服务（可选，如需 Exec / Judge 分用不同后端） ----
   # secondary:
   #   base_url: "https://another-service/api/v1/"
   #   api_key: "${ANOTHER_API_KEY}"
   #   timeout: 120.0
+  #   models:
+  #     some-model:
+  #       temperature: 0.1
+  #       max_tokens: 4096
 
 
-# ----- 2. 组件模型配置（每个组件独立指定 provider + model） -----
+# ----- 2. 组件模型分配（每个组件指定使用哪个 provider 的哪个 model） -----
+#
+# 只需填写两项:
+#   provider  - 引用上面 providers 中的名称
+#   model     - 引用该 provider.models 中的模型名称
+#
 models:
 
   # Test_Exec Agent（测试执行引擎）
   exec:
-    provider: "default"                    # 引用 providers 中的名称
-    model: "MiniMax-M2.5"                  # 模型标识（由服务端决定）
-    temperature: 0.1
-    max_tokens: 8192
+    provider: "default"
+    model: "MiniMax-M2.5"
 
   # Test_Judge Agent（测试判断引擎）
   judge:
     provider: "default"
     model: "glm-5"
-    temperature: 0.1
-    max_tokens: 8192
 
   # Embedding（向量检索用）
   embedding:
     provider: "default"
     model: "text-embedding-v4"
-    dimension: 1024                        # 向量维度
 
   # Query Rewriter（查询扩展）
   rewrite:
     provider: "default"
     model: "qwen3.5-plus"
-    temperature: 0.3
-    max_tokens: 256
 
 
 # ----- 3. 运行参数 -----
@@ -92,28 +122,26 @@ rag:
 
 
 # ----- 5. 目标 BMC 配置 -----
-# QEMU 跑在 WSL(172.23.17.208) 里，TCP 端口转发到 Windows 127.0.0.1
-# IPMI(UDP) 只能从 WSL 网段访问，Redfish/SSH(TCP) 转发到 127.0.0.1
 target:
-  bmc_host: "127.0.0.1"                   # Redfish / SSH
-  bmc_port: 10443
-  ipmi_host: "172.23.17.208"              # IPMI (UDP, WSL 网段)
-  ipmi_port: 10623
-  ssh_host: "127.0.0.1"                   # SSH (TCP, 转发到 Windows)
-  ssh_port: 10022
-  bmc_user: "Administrator"
-  bmc_password: "Admin@90000"
-  # os_host: "192.168.1.101"              # 可选: 主机控制台
-  # os_user: "root"
-  # os_password: "your_password"
+  bmc_host: "127.0.0.1"                   # Redfish / SSH 地址
+  bmc_port: 443                           # Redfish HTTPS 端口
+  ipmi_host: "192.168.1.100"              # IPMI 地址（UDP，需直连网段）
+  ipmi_port: 623                          # IPMI UDP 端口
+  ssh_host: "127.0.0.1"                   # SSH 地址（BMC Shell）
+  ssh_port: 22                            # SSH 端口（BMC Shell 默认 22，主机控制台 2200）
+  bmc_user: "Administrator"               # BMC 登录用户名
+  bmc_password: "your_password"           # BMC 登录密码
+  # os_host: "192.168.1.101"              # 可选: 主机控制台地址
+  # os_user: "root"                       # 可选: 主机控制台用户
+  # os_password: "your_password"          # 可选: 主机控制台密码
 
 
 # ----- 6. 存储配置 -----
 storage:
-  shared_dir: "./shared"
+  shared_dir: "./shared"                  # 共享数据目录
 
 
 # ----- 7. 日志配置 -----
 logging:
-  level: "INFO"
-  file: "./logs/test_framework.log"
+  level: "INFO"                            # 日志级别: DEBUG / INFO / WARNING / ERROR
+  file: "./logs/test_framework.log"        # 日志文件路径

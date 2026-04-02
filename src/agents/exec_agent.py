@@ -29,7 +29,7 @@ from jinja2 import Template
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
-from src.core.config import AppConfig, load_config
+from src.core.config import AppConfig, load_config, get_component_config
 from src.core.client_factory import ClientFactory
 from src.core.schemas import ExecutionRecord, StepRecord, StepStatus
 from src.tools.ipmi_tool import IPMITool
@@ -467,12 +467,12 @@ class ExecAgent:
         # 客户端工厂
         self._client_factory = ClientFactory(self._app_config)
 
-        # Exec 组件配置
-        exec_model = self._app_config.models.exec
-        self.base_url = self._app_config.providers[exec_model.provider].base_url
-        self.model = exec_model.model
-        self.temperature = exec_model.temperature
-        self.max_tokens = exec_model.max_tokens
+        # Exec 组件配置（通过 get_component_config 获取合并后的完整参数）
+        exec_comp = get_component_config(self._app_config, "exec")
+        self.base_url = exec_comp.base_url
+        self.model = exec_comp.model
+        self.temperature = exec_comp.temperature
+        self.max_tokens = exec_comp.max_tokens
 
         # 创建 Exec LLM 客户端
         self.client = self._client_factory.create_for("exec")
@@ -525,7 +525,8 @@ class ExecAgent:
         self._retriever: Optional[HybridRetriever] = None
         self._embed_client: Optional[AsyncOpenAI] = None
         self._embed_model = self._app_config.models.embedding.model
-        self._embed_dimension = self._app_config.models.embedding.dimension or 1024
+        embed_comp = get_component_config(self._app_config, "embedding")
+        self._embed_dimension = embed_comp.dimension or 1024
         self._rag_top_k = rag_cfg.top_k
         self._rag_rewrite_enabled = rag_cfg.enable_rewrite
         self._rag_rewrite_weight = rag_cfg.rewrite_weight

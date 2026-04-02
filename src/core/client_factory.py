@@ -31,7 +31,7 @@ from typing import Dict, Optional
 import httpx
 from openai import AsyncOpenAI
 
-from src.core.config import AppConfig, ComponentModel, ProviderConfig
+from src.core.config import AppConfig, ComponentModelRef, ProviderConfig
 
 logger = logging.getLogger("core.client_factory")
 
@@ -141,7 +141,7 @@ class ClientFactory:
     # 内部方法
     # ==================================================================
 
-    def _get_component_model(self, component: str) -> ComponentModel:
+    def _get_component_model(self, component: str) -> ComponentModelRef:
         """获取指定组件的 ComponentModel。"""
         models = self._config.models
         comp_map = {
@@ -159,7 +159,7 @@ class ClientFactory:
     def _create_client(
         self,
         component: str,
-        comp_model: ComponentModel,
+        comp_model: ComponentModelRef,
         provider: ProviderConfig,
     ) -> AsyncOpenAI:
         """创建并缓存 AsyncOpenAI 客户端。"""

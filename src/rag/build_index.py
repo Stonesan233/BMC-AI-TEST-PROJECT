@@ -274,15 +274,13 @@ async def main_async(args: argparse.Namespace) -> int:
     factory = ClientFactory(cfg)
     openai_client = factory.create_for("embedding")
 
-    embed_model = cfg.models.embedding.model
-    embed_dimension = cfg.models.embedding.dimension or args.dimension
-    embed_provider = cfg.models.embedding.provider
-    provider_cfg = cfg.providers[embed_provider]
-
+    # 通过 get_component_config 苿合并后的完整参数（无需硬编码 dimension)
+    comp = get_component_config(cfg, "embedding")
+    embed_dimension = comp.dimension or args.dimension
     print(f"[OK] Embedding 客户端已创建")
-    print(f"     provider:  {embed_provider}")
-    print(f"     base_url:  {provider_cfg.base_url}")
-    print(f"     model:     {embed_model}")
+    print(f"     provider:  {comp.provider_name}")
+    print(f"     base_url:  {comp.base_url}")
+    print(f"     model:     {comp.model}")
     print(f"     dimension: {embed_dimension}")
 
     # 3. 初始化 Chroma
@@ -320,7 +318,7 @@ async def main_async(args: argparse.Namespace) -> int:
             # Embedding + 存储
             await _embed_and_store(
                 chunks, openai_client, collection,
-                model_name=embed_model,
+                model_name=comp.model,
                 dimension=embed_dimension,
             )
             total_chunks += len(chunks)

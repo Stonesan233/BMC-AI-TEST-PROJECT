@@ -11,8 +11,8 @@
 用法:
   from src.core.config import load_config
   cfg = load_config("config/config.yaml")
-  exec_cfg = cfg.models.exec
-  provider  = cfg.get_provider(exec_cfg.provider)
+  exec_cfg = cfg.get_component_config("exec")
+  provider  = cfg.get_provider("minimax")
 """
 
 import logging
@@ -31,28 +31,36 @@ logger = logging.getLogger("core.config")
 # Pydantic 配置模型
 # ======================================================================
 
+class ModelSpec(BaseModel):
+    """provider 下的单个模型参数"""
+    temperature: float = Field(default=0.1, description="采样温度 (0.0~1.0)")
+    max_tokens: int = Field(default=4096, description="最大输出 token 数")
+    dimension: Optional[int] = Field(default=None, description="向量维度（仅 Embedding 模型）")
+
+
 class ProviderConfig(BaseModel):
     """单个服务提供者配置"""
     base_url: str = Field(..., description="OpenAI-compatible API base URL")
-    api_key: str = Field(..., description="API Key（支持 ${ENV_VAR} 格式）")
+    api_key: str = Field(..., description="API Key（已解析环境变量）")
     timeout: float = Field(default=120.0, description="HTTP 超时（秒）")
+    models: Dict[str, ModelSpec] = Field(
+        default_factory=dict,
+        description="该 provider 下可用的模型列表，key 为模型名称",
+    )
 
 
-class ComponentModel(BaseModel):
-    """组件模型配置（Exec / Judge / Embedding / Rewrite 通用）"""
+class ComponentModelRef(BaseModel):
+    """组件对 provider+model 的轻量引用"""
     provider: str = Field(..., description="引用 providers 中的名称")
-    model: str = Field(..., description="模型标识")
-    temperature: float = Field(default=0.1, description="采样温度")
-    max_tokens: int = Field(default=4096, description="最大输出 token")
-    dimension: Optional[int] = Field(default=None, description="向量维度（仅 Embedding）")
+    model: str = Field(..., description="引用 provider.models 中的模型名称")
 
 
 class ModelsConfig(BaseModel):
-    """所有组件的模型配置"""
-    exec: ComponentModel
-    judge: ComponentModel
-    embedding: ComponentModel
-    rewrite: ComponentModel
+    """所有组件的模型引用"""
+    exec: ComponentModelRef
+    judge: ComponentModelRef
+    embedding: ComponentModelRef
+    rewrite: ComponentModelRef
 
 
 class RAGConfig(BaseModel):
@@ -82,6 +90,22 @@ class AppConfig(BaseModel):
 
 
 # ======================================================================
+# 运行时解析结果（组件 -> 合并后的完整参数）
+# ======================================================================
+
+class ResolvedComponentConfig(BaseModel):
+    """解析后的组件完整配置（合并 provider + model 参数）"""
+    provider_name: str
+    base_url: str
+    api_key: str
+    timeout: float
+    model: str
+    temperature: float
+    max_tokens: int
+    dimension: Optional[int] = None
+
+
+# ======================================================================
 # 环境变量解析
 # ======================================================================
 
@@ -104,7 +128,6 @@ def resolve_env_value(value: str) -> str:
     if resolved:
         return resolved
 
-    # 尝试从 .env 文件加载
     resolved = _read_dotenv_var(env_var)
     if resolved:
         return resolved
@@ -117,7 +140,6 @@ def _read_dotenv_var(key: str) -> str:
     """从项目根目录 .env 文件中读取指定变量。"""
     env_path = Path.cwd() / ".env"
     if not env_path.exists():
-        # 也尝试 src/core 的上两级目录（项目根）
         env_path = Path(__file__).resolve().parents[2] / ".env"
     if not env_path.exists():
         return ""
@@ -155,7 +177,6 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
     """
     path = Path(config_path)
     if not path.exists():
-        # 回退到 example
         example_path = Path("config/config_example.yaml")
         if example_path.exists():
             logger.warning(
@@ -175,10 +196,13 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
     if not raw or not isinstance(raw, dict):
         raise ValueError("配置文件内容为空或格式错误")
 
-    # 解析 providers 中的环境变量
+    # --- 解析 providers ---
     providers_raw = raw.get("providers", {})
     if not providers_raw:
-        raise ValueError("config.yaml 中缺少 providers 配置段")
+        raise ValueError(
+            "config.yaml 中缺少 providers 配置段。\n"
+            "请在 config.yaml 中添加 providers 配置，参考 config_example.yaml"
+        )
 
     resolved_providers = {}
     for name, prov in providers_raw.items():
@@ -189,35 +213,53 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
             base_url=prov.get("base_url", ""),
             api_key=resolve_env_value(api_key_raw),
             timeout=float(prov.get("timeout", 120.0)),
+            models=_parse_provider_models(name, prov.get("models", {})),
         )
 
     # 验证 providers 的 base_url
     for name, prov in resolved_providers.items():
         if not prov.base_url:
-            raise ValueError(f"providers.{name}.base_url 不能为空")
-
-    # 解析 models
-    models_raw = raw.get("models", {})
-    if not models_raw:
-        raise ValueError("config.yaml 中缺少 models 配置段")
-
-    models = ModelsConfig(
-        exec=_parse_component(models_raw.get("exec", {})),
-        judge=_parse_component(models_raw.get("judge", {})),
-        embedding=_parse_component(models_raw.get("embedding", {})),
-        rewrite=_parse_component(models_raw.get("rewrite", {})),
-    )
-
-    # 验证 models 中引用的 provider 是否存在
-    for comp_name in ("exec", "judge", "embedding", "rewrite"):
-        comp: ComponentModel = getattr(models, comp_name)
-        if comp.provider not in resolved_providers:
             raise ValueError(
-                f"models.{comp_name}.provider = '{comp.provider}' "
-                f"但在 providers 中未定义。可用的 provider: {list(resolved_providers.keys())}"
+                f"providers.{name}.base_url 不能为空。\n"
+                f"请在 providers.{name} 下设置 base_url 为 OpenAI 兼容 API 地址"
             )
 
-    # 解析 RAG
+    # --- 解析 models（组件引用） ---
+    models_raw = raw.get("models", {})
+    if not models_raw:
+        raise ValueError(
+            "config.yaml 中缺少 models 配置段。\n"
+            "请在 config.yaml 中添加 models 配置，指定各组件使用的 provider 和 model"
+        )
+
+    models = ModelsConfig(
+        exec=_parse_component_ref("exec", models_raw.get("exec", {})),
+        judge=_parse_component_ref("judge", models_raw.get("judge", {})),
+        embedding=_parse_component_ref("embedding", models_raw.get("embedding", {})),
+        rewrite=_parse_component_ref("rewrite", models_raw.get("rewrite", {})),
+    )
+
+    # --- 验证 models 中引用的 provider + model 是否存在 ---
+    for comp_name in ("exec", "judge", "embedding", "rewrite"):
+        comp: ComponentModelRef = getattr(models, comp_name)
+        if comp.provider not in resolved_providers:
+            raise ValueError(
+                f"models.{comp_name}.provider = '{comp.provider}' 但在 providers 中未定义。\n"
+                f"可用的 provider: {list(resolved_providers.keys())}\n"
+                f"请在 providers 下添加 '{comp.provider}' 或修改 models.{comp_name}.provider"
+            )
+        prov_cfg = resolved_providers[comp.provider]
+        if comp.model not in prov_cfg.models:
+            available = list(prov_cfg.models.keys())
+            raise ValueError(
+                f"models.{comp_name}.model = '{comp.model}' "
+                f"但在 providers.{comp.provider}.models 中未定义。\n"
+                f"可用的 model: {available}\n"
+                f"请在 providers.{comp.provider}.models 下添加 '{comp.model}' "
+                f"或修改 models.{comp_name}.model"
+            )
+
+    # --- 解析 RAG ---
     rag_raw = raw.get("rag", {})
     rag = RAGConfig(**{k: v for k, v in rag_raw.items() if k in RAGConfig.model_fields})
 
@@ -241,12 +283,84 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
     return cfg
 
 
-def _parse_component(raw: dict) -> ComponentModel:
-    """从原始字典解析 ComponentModel，设置合理默认值。"""
-    return ComponentModel(
+def get_component_config(cfg: AppConfig, component: str) -> ResolvedComponentConfig:
+    """
+    获取组件的完整解析配置（合并 provider + model 参数）。
+
+    Args:
+        cfg: AppConfig 实例
+        component: 组件名称 ("exec" / "judge" / "embedding" / "rewrite")
+
+    Returns:
+        ResolvedComponentConfig（包含 base_url, api_key, model, temperature, dimension 等全部参数）
+    """
+    comp_map = {
+        "exec": cfg.models.exec,
+        "judge": cfg.models.judge,
+        "embedding": cfg.models.embedding,
+        "rewrite": cfg.models.rewrite,
+    }
+    if component not in comp_map:
+        raise ValueError(f"无效组件 '{component}'，可选: {list(comp_map.keys())}")
+
+    ref = comp_map[component]
+    provider = cfg.providers[ref.provider]
+    model_spec = provider.models[ref.model]
+
+    return ResolvedComponentConfig(
+        provider_name=ref.provider,
+        base_url=provider.base_url,
+        api_key=provider.api_key,
+        timeout=provider.timeout,
+        model=ref.model,
+        temperature=model_spec.temperature,
+        max_tokens=model_spec.max_tokens,
+        dimension=model_spec.dimension,
+    )
+
+
+# ======================================================================
+# 内部解析函数
+# ======================================================================
+
+def _parse_provider_models(provider_name: str, models_raw: dict) -> Dict[str, ModelSpec]:
+    """解析 provider 下的 models 字典。"""
+    if not models_raw:
+        raise ValueError(
+            f"providers.{provider_name}.models 为空。\n"
+            f"请在 providers.{provider_name} 下添加 models 配置，例如:\n"
+            f"  providers:\n"
+            f"    {provider_name}:\n"
+            f"      ...\n"
+            f"      models:\n"
+            f"        your-model-name:\n"
+            f"          temperature: 0.1\n"
+            f"          max_tokens: 8192"
+        )
+    result = {}
+    for model_name, spec in models_raw.items():
+        if not isinstance(spec, dict):
+            spec = {}
+        result[model_name] = ModelSpec(
+            temperature=float(spec.get("temperature", 0.1)),
+            max_tokens=int(spec.get("max_tokens", 4096)),
+            dimension=spec.get("dimension"),
+        )
+    return result
+
+
+def _parse_component_ref(comp_name: str, raw: dict) -> ComponentModelRef:
+    """解析组件的 provider + model 引用。"""
+    if not raw:
+        raise ValueError(
+            f"models.{comp_name} 配置为空。\n"
+            f"请添加:\n"
+            f"  models:\n"
+            f"    {comp_name}:\n"
+            f"      provider: \"your-provider\"\n"
+            f"      model: \"your-model\""
+        )
+    return ComponentModelRef(
         provider=raw.get("provider", "default"),
         model=raw.get("model", ""),
-        temperature=float(raw.get("temperature", 0.1)),
-        max_tokens=int(raw.get("max_tokens", 4096)),
-        dimension=raw.get("dimension"),
     )
