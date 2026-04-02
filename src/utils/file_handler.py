@@ -426,8 +426,12 @@ def _convert_sheet(
     col_map = _map_excel_columns(df)
     logger.info("Sheet '%s': 检测到列映射 %s", sheet_name, col_map)
 
-    if "用例_编号" not in col_map and "用例_名称" not in col_map:
-        logger.warning("Sheet '%s': 未找到 '编号' 或 '名称' 列，跳过", sheet_name)
+    # 校验必填列
+    _REQUIRED_COLUMNS = ["用例_编号", "用例_名称", "预置条件", "测试步骤", "预期结果"]
+    missing = [c for c in _REQUIRED_COLUMNS if c not in col_map]
+    if missing:
+        print(f"  [WARN] Sheet '{sheet_name}': 缺少必填列 {missing}，跳过")
+        logger.warning("Sheet '%s': 缺少必填列 %s，跳过", sheet_name, missing)
         return []
 
     generated: List[str] = []
@@ -435,14 +439,17 @@ def _convert_sheet(
         try:
             case = _build_case_dict(row, col_map, idx)
             case_id = case["用例_编号"]
+            case_name = case["用例_名称"]
 
-            filename = _safe_filename(case_id) + ".yaml"
+            # 文件名：优先用例_编号，fallback 到 sanitized 用例名称
+            base_name = case_id if case_id and not case_id.startswith("TC-EXCEL-") else case_name
+            filename = _safe_filename(base_name) + ".yaml"
             output_path = output_dir / filename
 
             # 文件名冲突时追加序号
             counter = 1
             while output_path.exists():
-                output_path = output_dir / f"{_safe_filename(case_id)}_{counter}.yaml"
+                output_path = output_dir / f"{_safe_filename(base_name)}_{counter}.yaml"
                 counter += 1
 
             # 写入 YAML

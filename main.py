@@ -81,6 +81,27 @@ def load_test_cases(case_paths: List[str]) -> List[Dict[str, Any]]:
 # 工具函数
 # ============================================================
 
+def _resolve_excel_paths(
+    excel_args: List[str],
+    shared_dir: str,
+) -> List[str]:
+    """处理 --excel 参数，返回转换后的 YAML 文件路径列表"""
+    excel_yaml_dir = Path(shared_dir) / "excel_cases"
+    generated: List[str] = []
+    for ep in excel_args:
+        p = Path(ep)
+        if not p.exists():
+            print(f"[ERROR] Excel 路径不存在: {ep}")
+            continue
+        generated.extend(convert_excel_to_yaml(str(p), str(excel_yaml_dir)))
+
+    if generated:
+        print(f"[Excel] 已转换 {len(generated)} 个用例为 YAML，保存至 {excel_yaml_dir}/")
+    else:
+        print("[Excel] 未生成任何 YAML 文件")
+    return generated
+
+
 def group_cases_by_batch(
     cases: List[Dict[str, Any]],
     batch_size: int
@@ -295,16 +316,7 @@ async def main_async(args: argparse.Namespace) -> int:
     # 4. Excel 用例转换（如果提供 --excel）
     case_paths = list(args.cases) if args.cases else []
     if args.excel:
-        print(f"\n[Excel] 开始转换 Excel 用例...")
-        excel_yaml_dir = Path(shared_dir) / "excel_cases"
-        for ep in args.excel:
-            p = Path(ep)
-            if not p.exists():
-                print(f"[ERROR] Excel 路径不存在: {ep}")
-                continue
-            generated = convert_excel_to_yaml(str(p), str(excel_yaml_dir))
-            case_paths.extend(generated)
-        print(f"[Excel] 转换完成，共 {len(case_paths)} 个用例文件\n")
+        case_paths.extend(_resolve_excel_paths(args.excel, shared_dir))
 
     if not case_paths:
         print("[ERROR] 未提供任何用例（--cases 或 --excel 至少需要一个）")
