@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import re
-import ssl
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -499,8 +498,9 @@ class ExecAgent:
         self.ssh_port = target.get("ssh_port", 10022)
         self.ssh_host = target.get("ssh_host", self.bmc_host)
 
-        # httpx 客户端（禁用 SSL 验证，适配自签证书）
+        # httpx 客户端（根据配置决定是否验证 SSL）
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._verify_ssl = target.get("verify_ssl", True)
 
         # IPMI Tool 实例（pyghmi 后端）
         self._ipmi_tool = IPMITool(
@@ -569,7 +569,7 @@ class ExecAgent:
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
                 base_url=f"https://{self.bmc_host}:{self.bmc_port}",
-                verify=False,     # 自签证书环境
+                verify=self._verify_ssl,
                 timeout=30.0,
                 trust_env=False,  # 禁用系统代理，避免 Windows 代理干扰
             )
@@ -628,7 +628,6 @@ class ExecAgent:
             resp = await self._embed_client.embeddings.create(
                 model=self._embed_model,
                 input=[query],
-                dimensions=self._embed_dimension,
             )
             embedding = resp.data[0].embedding
             logger.debug(f"[RAG] Embedding 生成成功 (dim={len(embedding)})")

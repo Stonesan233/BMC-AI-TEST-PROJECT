@@ -16,10 +16,11 @@
 # ----- 1. 服务提供者（可定义多个，按需引用） -----
 #
 # 每个 provider 包含:
-#   base_url  - OpenAI 兼容 API 地址（必填）
-#   api_key   - API 密钥，支持 ${ENV_VAR} 引用或直接填写（必填）
-#   timeout   - HTTP 超时秒数（默认 120）
-#   models    - 该 provider 下可用的模型列表及参数（必填）
+#   base_url    - OpenAI 兼容 API 地址（必填）
+#   api_key     - API 密钥，支持 ${ENV_VAR} 引用或直接填写（必填）
+#   timeout     - HTTP 超时秒数（默认 120）
+#   verify_ssl  - 是否验证 SSL 证书（默认 true，内网自签名证书设为 false）
+#   models      - 该 provider 下可用的模型列表及参数（必填）
 #
 # models 下的每个模型包含:
 #   temperature  - 采样温度，0.0~1.0（默认 0.1）
@@ -33,6 +34,7 @@ providers:
     base_url: "https://your-openai-service/api/v1/"
     api_key: "${YOUR_API_KEY}"             # 推荐: 环境变量引用
     timeout: 120.0                         # HTTP 超时（秒）
+    # verify_ssl: false                    # 内网自签名证书环境取消注释
 
     models:
       MiniMax-M2.5:                        # Exec Agent 使用
@@ -67,6 +69,7 @@ providers:
   #   base_url: "https://your-embedding-server:8000/v1/"
   #   api_key: "${EMBEDDING_API_KEY}"
   #   timeout: 60.0
+  #   verify_ssl: false                    # 内网自签名证书，跳过 SSL 验证
   #   models:
   #     bge-large-zh-v1.5:                    # 替换为内网实际模型名
   #       dimension: 1024                      # 必须与模型输出维度一致
@@ -148,6 +151,7 @@ target:
   ssh_port: 22                            # SSH 端口（BMC Shell 默认 22，主机控制台 2200）
   bmc_user: "Administrator"               # BMC 登录用户名
   bmc_password: "your_password"           # BMC 登录密码
+  verify_ssl: false                       # BMC 自签名证书环境建议设为 false
   # os_host: "192.168.1.101"              # 可选: 主机控制台地址
   # os_user: "root"                       # 可选: 主机控制台用户
   # os_password: "your_password"          # 可选: 主机控制台密码

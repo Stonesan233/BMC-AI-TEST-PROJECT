@@ -43,6 +43,7 @@ class ProviderConfig(BaseModel):
     base_url: str = Field(..., description="OpenAI-compatible API base URL")
     api_key: str = Field(..., description="API Key（已解析环境变量）")
     timeout: float = Field(default=120.0, description="HTTP 超时（秒）")
+    verify_ssl: bool = Field(default=True, description="是否验证 SSL 证书（内网自签名证书可设置为 False）")
     models: Dict[str, ModelSpec] = Field(
         default_factory=dict,
         description="该 provider 下可用的模型列表，key 为模型名称",
@@ -213,6 +214,7 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
             base_url=prov.get("base_url", ""),
             api_key=resolve_env_value(api_key_raw),
             timeout=float(prov.get("timeout", 120.0)),
+            verify_ssl=bool(prov.get("verify_ssl", True)),
             models=_parse_provider_models(name, prov.get("models", {})),
         )
 

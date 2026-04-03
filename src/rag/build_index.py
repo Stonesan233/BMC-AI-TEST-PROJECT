@@ -145,7 +145,6 @@ async def _embed_batch_with_retry(
             resp = await client.embeddings.create(
                 model=model,
                 input=texts,
-                dimensions=dimension,
             )
             # 按 index 排序确保与输入顺序一致
             sorted_data = sorted(resp.data, key=lambda x: x.index)

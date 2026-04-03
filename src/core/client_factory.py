@@ -100,7 +100,10 @@ class ClientFactory:
         if provider is None:
             raise ValueError(f"provider '{provider_name}' 不存在")
 
-        http_client = httpx.AsyncClient(timeout=timeout or provider.timeout)
+        http_client = httpx.AsyncClient(
+            timeout=timeout or provider.timeout,
+            verify=provider.verify_ssl,
+        )
         self._http_clients[cache_key] = http_client
 
         client = AsyncOpenAI(
@@ -112,7 +115,7 @@ class ClientFactory:
 
         logger.info(
             f"[ClientFactory] 创建客户端: provider={provider_name}, "
-            f"base_url={provider.base_url}"
+            f"base_url={provider.base_url}, verify_ssl={provider.verify_ssl}"
         )
         return client
 
@@ -163,7 +166,10 @@ class ClientFactory:
         provider: ProviderConfig,
     ) -> AsyncOpenAI:
         """创建并缓存 AsyncOpenAI 客户端。"""
-        http_client = httpx.AsyncClient(timeout=provider.timeout)
+        http_client = httpx.AsyncClient(
+            timeout=provider.timeout,
+            verify=provider.verify_ssl,
+        )
         self._http_clients[component] = http_client
 
         client = AsyncOpenAI(
@@ -176,6 +182,6 @@ class ClientFactory:
         logger.info(
             f"[ClientFactory] 创建客户端: component={component}, "
             f"provider={comp_model.provider}, model={comp_model.model}, "
-            f"base_url={provider.base_url}"
+            f"base_url={provider.base_url}, verify_ssl={provider.verify_ssl}"
         )
         return client
