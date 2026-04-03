@@ -112,9 +112,9 @@ agent:
   exec_batch_size: 1                       # Exec Agent 批量大小 (1~3)
   judge_batch_size: 1                      # Judge Agent 批量大小 (固定为 1)
 
-  # 工具调用超时（基于实际耗时，替代固定调用次数判断）
+  # 工具调用超时（基于实际耗时，替代旧的固定调用次数判断）
   # BMC 测试中 IPMI/Redfish/SSH 命令可能耗时 30~300 秒，
-  # 基于实际耗时的超时比固定次数更合理，默认 10 分钟
+  # 基于实际耗时的超时比固定次数更合理
   tool_timeout_seconds: 600                # 单次工具调用超时（秒），默认 600 = 10 分钟
 
 

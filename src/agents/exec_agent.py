@@ -438,10 +438,6 @@ class ExecAgent:
     SYSTEM_PROMPT_PATH = Path("src/prompts/exec_system.txt")
     MAX_TOOL_ROUNDS = 50          # 最大工具调用轮次（安全上限，防无限循环）
 
-    # 单次工具调用超时（秒），BMC 测试中 IPMI/Redfish/SSH 可能耗时 30~300s，
-    # 改为基于实际耗时的超时，默认 10 分钟，远大于固定次数判断
-    _TOOL_TIMEOUT_SECONDS = 600.0
-
     def __init__(self, config: dict):
         """
         初始化 ExecAgent。
@@ -480,6 +476,11 @@ class ExecAgent:
 
         # 创建 Exec LLM 客户端
         self.client = self._client_factory.create_for("exec")
+
+        # 工具调用超时配置（从 config.yaml agent 段读取，默认 600s = 10 分钟）
+        agent_cfg = self.config.get("agent", {}) if isinstance(self.config, dict) else {}
+        self._tool_timeout_seconds = float(agent_cfg.get("tool_timeout_seconds", 600.0))
+        logger.info(f"工具超时配置: tool_timeout={self._tool_timeout_seconds}s")
 
         self.shared_dir = (
             self._app_config.storage.get("shared_dir", "./shared")
@@ -749,7 +750,6 @@ class ExecAgent:
         无 tool_calls 时返回最终文本。
         """
         text = ""
-        conv_start = time.monotonic()
         for round_num in range(self.MAX_TOOL_ROUNDS):
             logger.info(f"--- 第 {round_num + 1} 轮 ---")
 
@@ -759,14 +759,10 @@ class ExecAgent:
             if finish_reason != "tool_calls" or not tool_calls:
                 return text
 
-            # 执行 tool calls 并注入结果（单次调用受 _TOOL_TIMEOUT_SECONDS 约束）
+            # 执行 tool calls 并注入结果（单次调用受 tool_timeout_seconds 约束）
             await self._process_tool_calls(messages, text, tool_calls)
 
-        elapsed = time.monotonic() - conv_start
-        logger.warning(
-            f"达到最大对话轮次限制 ({self.MAX_TOOL_ROUNDS}), "
-            f"总耗时 {elapsed:.1f}s"
-        )
+        logger.warning(f"达到最大对话轮次限制 ({self.MAX_TOOL_ROUNDS})")
         return text
 
     async def _stream_response(self, messages: list) -> tuple:
@@ -869,28 +865,9 @@ class ExecAgent:
             args_preview = json.dumps(args, ensure_ascii=False)[:120]
             logger.info(f"[Tool Call] {tool_name}({args_preview})")
 
-            # 基于实际耗时的单次工具超时控制（默认 600s = 10 分钟）
-            tool_start = time.monotonic()
-            try:
-                result = await asyncio.wait_for(
-                    self._dispatch_tool(tool_name, args),
-                    timeout=self._TOOL_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                elapsed = time.monotonic() - tool_start
-                logger.error(
-                    f"[Tool Timeout] {tool_name} 超时: "
-                    f"elapsed={elapsed:.1f}s, timeout={self._TOOL_TIMEOUT_SECONDS}s"
-                )
-                result = json.dumps({
-                    "error": (
-                        f"工具 {tool_name} 执行超时"
-                        f"（{elapsed:.1f}s > {self._TOOL_TIMEOUT_SECONDS}s），"
-                        f"请在 config.yaml agent.tool_timeout_seconds 中调整"
-                    )
-                }, ensure_ascii=False)
+            # 基于实际耗时的单次工具超时控制（默认 600s = 10 分钟，可配置）
+            result, tool_elapsed = await self._call_tool_with_timeout(tool_name, args)
 
-            tool_elapsed = time.monotonic() - tool_start
             result_preview = str(result)[:500]
             logger.info(
                 f"[Tool Result] {tool_name} -> {result_preview[:200]} "
@@ -905,8 +882,44 @@ class ExecAgent:
             })
 
     # ==================================================================
-    # Tool 分发
+    # Tool 分发（含超时控制）
     # ==================================================================
+
+    async def _call_tool_with_timeout(
+        self, tool_name: str, args: dict
+    ) -> tuple[str, float]:
+        """
+        执行单次工具调用，带基于实际耗时的超时控制。
+
+        默认 600s (10 分钟)，BMC 测试中 IPMI/Redfish/SSH 命令
+        可能耗时 30~300 秒，基于实际耗时的超时比固定次数更合理。
+        超时值通过 config.yaml agent.tool_timeout_seconds 配置。
+
+        Returns:
+            (result_json: str, elapsed_seconds: float)
+        """
+        tool_start = time.monotonic()
+        try:
+            result = await asyncio.wait_for(
+                self._dispatch_tool(tool_name, args),
+                timeout=self._tool_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            elapsed = time.monotonic() - tool_start
+            logger.error(
+                f"[Tool Timeout] {tool_name} 超时: "
+                f"elapsed={elapsed:.1f}s, timeout={self._tool_timeout_seconds}s"
+            )
+            result = json.dumps({
+                "error": (
+                    f"工具 {tool_name} 执行超时"
+                    f"（{elapsed:.1f}s > {self._tool_timeout_seconds}s），"
+                    f"请在 config.yaml agent.tool_timeout_seconds 中调整"
+                )
+            }, ensure_ascii=False)
+
+        elapsed = time.monotonic() - tool_start
+        return result, elapsed
 
     async def _dispatch_tool(self, tool_name: str, args: dict) -> str:
         """分发 tool call 到对应 handler。"""
