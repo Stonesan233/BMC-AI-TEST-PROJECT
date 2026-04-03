@@ -103,6 +103,7 @@ class ClientFactory:
         http_client = httpx.AsyncClient(
             timeout=timeout or provider.timeout,
             verify=provider.verify_ssl,
+            trust_env=False,  # 禁用系统代理，避免内网 HTTP_PROXY/HTTPS_PROXY 干扰
         )
         self._http_clients[cache_key] = http_client
 
@@ -169,6 +170,7 @@ class ClientFactory:
         http_client = httpx.AsyncClient(
             timeout=provider.timeout,
             verify=provider.verify_ssl,
+            trust_env=False,  # 禁用系统代理，避免内网 HTTP_PROXY/HTTPS_PROXY 干扰
         )
         self._http_clients[component] = http_client
 
