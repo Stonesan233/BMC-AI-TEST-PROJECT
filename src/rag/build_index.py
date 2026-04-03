@@ -132,16 +132,19 @@ async def _embed_batch_with_retry(
     client: AsyncOpenAI,
     texts: List[str],
     model: str,
-    dimension: int,
 ) -> Optional[List[List[float]]]:
     """
     批量 Embedding，带重试逻辑。
+
+    注意: 不传入 dimensions 参数，让 Embedding 模型返回原生维度
+          （避免 vLLM-ascend scheduler bug / Matryoshka 相关错误）
 
     Returns:
         向量列表，或在 model not found 时返回 None (触发 fallback)
     """
     for attempt in range(MAX_RETRIES):
         try:
+            # 不传 dimensions 参数，使用模型原生维度（避免 vLLM-ascend bug）
             resp = await client.embeddings.create(
                 model=model,
                 input=texts,
@@ -187,9 +190,8 @@ async def _embed_and_store(
     client: AsyncOpenAI,
     collection,
     model_name: str,
-    dimension: int,
-) -> None:
-    """批量 Embedding 分块并存入 Chroma。"""
+) -> int:
+    """批量 Embedding 分块并存入 Chroma。返回检测到的向量维度。"""
     # 安全截断线: 中文约 1 字符 ~ 1-2 tokens, 取 6000 字符
     MAX_TEXT_CHARS = 6000
 
@@ -219,6 +221,7 @@ async def _embed_and_store(
     ]
 
     pbar = tqdm(total=len(texts), desc="Embedding", unit="chunk")
+    detected_dim = 0  # 从首次成功结果中自动检测向量维度
 
     for batch_idx, batch in enumerate(batches):
         batch_start = batch_idx * BATCH_SIZE
@@ -227,7 +230,7 @@ async def _embed_and_store(
         batch_metas = metadatas[batch_start : batch_start + len(batch)]
 
         embeddings = await _embed_batch_with_retry(
-            client, batch, model_name, dimension
+            client, batch, model_name
         )
 
         if embeddings is None:
@@ -235,6 +238,11 @@ async def _embed_and_store(
                 f"Embedding 模型 {model_name} 失败 "
                 f"(batch {batch_idx + 1}/{len(batches)})"
             )
+
+        # 自动检测实际向量维度（首次成功时）
+        if detected_dim == 0 and embeddings:
+            detected_dim = len(embeddings[0])
+            logger.info(f"检测到 Embedding 原生维度: {detected_dim}")
 
         # 逐批存入 Chroma (增量 upsert，避免全部完成后才存储)
         try:
@@ -253,8 +261,9 @@ async def _embed_and_store(
     pbar.close()
     logger.info(
         f"已存储 {len(ids)} 个 chunks 到 collection '{collection.name}' "
-        f"(model={model_name})"
+        f"(model={model_name}, dim={detected_dim})"
     )
+    return detected_dim
 
 
 # ---------------------------------------------------------------------------
@@ -351,14 +360,15 @@ async def main_async(args: argparse.Namespace) -> int:
     factory = ClientFactory(cfg)
     openai_client = factory.create_for("embedding")
 
-    # 通过 get_component_config 苿合并后的完整参数（无需硬编码 dimension)
+    # 通过 get_component_config 获取合并后的完整参数
+    # 注意: dimension 仅用于显示和签名追踪，不传给 Embedding API
     comp = get_component_config(cfg, "embedding")
     embed_dimension = comp.dimension or args.dimension
     print(f"[OK] Embedding 客户端已创建")
     print(f"     provider:  {comp.provider_name}")
     print(f"     base_url:  {comp.base_url}")
     print(f"     model:     {comp.model}")
-    print(f"     dimension: {embed_dimension}")
+    print(f"     dimension: {embed_dimension} (配置值，实际使用模型原生维度)")
 
     # 3. 初始化 Chroma
     persist_dir = args.persist_dir
@@ -413,12 +423,13 @@ async def main_async(args: argparse.Namespace) -> int:
                 print(f"[WARN] 无有效分块，跳过")
                 continue
 
-            # Embedding + 存储
-            await _embed_and_store(
+            # Embedding + 存储（不传 dimensions，使用模型原生维度）
+            detected = await _embed_and_store(
                 chunks, openai_client, collection,
                 model_name=comp.model,
-                dimension=embed_dimension,
             )
+            if detected > 0:
+                embed_dimension = detected
             total_chunks += len(chunks)
 
         except Exception as e:
@@ -435,7 +446,7 @@ async def main_async(args: argparse.Namespace) -> int:
     print(f"  DB 总 chunks: {collection.count()}")
     print(f"  Collection:  {args.collection_name}")
     print(f"  持久化目录:  {persist_dir}")
-    print(f"  Embedding:   {comp.provider_name}/{comp.model} (dim={embed_dimension})")
+    print(f"  Embedding:   {comp.provider_name}/{comp.model} (dim={embed_dimension}, 原生维度)")
     print(f"  总耗时:      {elapsed:.1f}s")
     print(f"{'=' * 60}")
 

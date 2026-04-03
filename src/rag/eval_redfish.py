@@ -62,10 +62,10 @@ async def _embed_single(
 ) -> Optional[List[float]]:
     for attempt in range(max_retries):
         try:
+            # 不传 dimensions，使用模型原生维度（避免 vLLM-ascend bug）
             resp = await client.embeddings.create(
                 model=EMBEDDING_MODEL,
                 input=[text],
-                dimensions=EMBEDDING_DIM,
             )
             return resp.data[0].embedding
         except Exception as e:
@@ -87,10 +87,10 @@ async def embed_queries(
     for i in range(0, len(queries), batch_size):
         batch = queries[i : i + batch_size]
         try:
+            # 不传 dimensions，使用模型原生维度（避免 vLLM-ascend bug）
             resp = await client.embeddings.create(
                 model=EMBEDDING_MODEL,
                 input=batch,
-                dimensions=EMBEDDING_DIM,
             )
             for j in range(len(batch)):
                 result[queries[i + j]] = resp.data[j].embedding
