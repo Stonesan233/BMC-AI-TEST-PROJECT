@@ -500,7 +500,8 @@ class ExecAgent:
 
         # httpx 客户端（根据配置决定是否验证 SSL）
         self._http_client: Optional[httpx.AsyncClient] = None
-        self._verify_ssl = target.get("verify_ssl", True)
+        # 默认 False: BMC 设备通常使用自签名证书，内网环境需跳过 SSL 验证
+        self._verify_ssl = target.get("verify_ssl", False)
 
         # IPMI Tool 实例（pyghmi 后端）
         self._ipmi_tool = IPMITool(
