@@ -45,15 +45,6 @@ from src.rag.retriever import HybridRetriever
 logger = logging.getLogger("exec_agent")
 
 
-# ======================================================================
-# 自定义异常
-# ======================================================================
-
-class ToolTimeoutError(Exception):
-    """工具调用超时异常（基于实际耗时判断，非调用次数）。"""
-    pass
-
-
 def setup_logging(log_dir: str = "./logs") -> None:
     """初始化日志系统，同时输出到文件和控制台。"""
     logger.setLevel(logging.DEBUG)
@@ -445,9 +436,11 @@ class ExecAgent:
     """
 
     SYSTEM_PROMPT_PATH = Path("src/prompts/exec_system.txt")
+    MAX_TOOL_ROUNDS = 50          # 最大工具调用轮次（安全上限，防无限循环）
 
-    # 安全上限：防止 LLM 无限循环（不作为超时判断依据）
-    _ABSOLUTE_MAX_ROUNDS = 100
+    # 单次工具调用超时（秒），BMC 测试中 IPMI/Redfish/SSH 可能耗时 30~300s，
+    # 改为基于实际耗时的超时，默认 10 分钟，远大于固定次数判断
+    _TOOL_TIMEOUT_SECONDS = 600.0
 
     def __init__(self, config: dict):
         """
@@ -487,15 +480,6 @@ class ExecAgent:
 
         # 创建 Exec LLM 客户端
         self.client = self._client_factory.create_for("exec")
-
-        # 工具调用超时配置（改为基于实际耗时，默认 10 分钟）
-        agent_cfg = self._app_config.agent
-        self._tool_timeout = agent_cfg.tool_timeout_seconds
-        self._max_tool_rounds = agent_cfg.max_tool_rounds
-        logger.info(
-            f"工具超时配置: tool_timeout={self._tool_timeout}s, "
-            f"max_rounds={self._max_tool_rounds} (安全上限)"
-        )
 
         self.shared_dir = (
             self._app_config.storage.get("shared_dir", "./shared")
@@ -763,28 +747,11 @@ class ExecAgent:
 
         每轮：流式接收 -> 如有 tool_calls 则执行 -> 继续
         无 tool_calls 时返回最终文本。
-
-        超时策略（基于实际耗时，非固定调用次数）:
-          - tool_timeout_seconds: 单次工具调用超时（默认 600s = 10 分钟）
-          - max_tool_rounds: LLM 对话最大轮次（安全上限，防止无限循环，默认 50）
         """
         text = ""
-        start_time = time.monotonic()
-        timeout = self._tool_timeout
-        max_rounds = self._max_tool_rounds
-
-        round_num = 0
-        while round_num < max_rounds:
-            round_num += 1
-            elapsed = time.monotonic() - start_time
-            logger.info(f"--- 第 {round_num} 轮 (已耗时 {elapsed:.1f}s / {timeout}s) ---")
-
-            # 已超时则不再发起新一轮
-            if elapsed >= timeout:
-                logger.warning(
-                    f"工具调用总耗时 {elapsed:.1f}s 已超过配置超时 {timeout}s，终止对话"
-                )
-                break
+        conv_start = time.monotonic()
+        for round_num in range(self.MAX_TOOL_ROUNDS):
+            logger.info(f"--- 第 {round_num + 1} 轮 ---")
 
             text, tool_calls, finish_reason = await self._stream_response(messages)
 
@@ -792,14 +759,13 @@ class ExecAgent:
             if finish_reason != "tool_calls" or not tool_calls:
                 return text
 
-            # 执行 tool calls 并注入结果（单次调用受 tool_timeout_seconds 约束）
+            # 执行 tool calls 并注入结果（单次调用受 _TOOL_TIMEOUT_SECONDS 约束）
             await self._process_tool_calls(messages, text, tool_calls)
 
-        # 走到这里说明超时或达到安全上限
-        elapsed = time.monotonic() - start_time
+        elapsed = time.monotonic() - conv_start
         logger.warning(
-            f"对话结束: rounds={round_num}, elapsed={elapsed:.1f}s, "
-            f"timeout={timeout}s"
+            f"达到最大对话轮次限制 ({self.MAX_TOOL_ROUNDS}), "
+            f"总耗时 {elapsed:.1f}s"
         )
         return text
 
@@ -890,7 +856,7 @@ class ExecAgent:
             "tool_calls": assistant_calls,
         })
 
-        # 逐个执行 tool（每个工具调用受 tool_timeout_seconds 超时约束）
+        # 逐个执行 tool
         for tc_data in assistant_calls:
             tool_name = tc_data["function"]["name"]
             tool_call_id = tc_data["id"]
@@ -903,24 +869,24 @@ class ExecAgent:
             args_preview = json.dumps(args, ensure_ascii=False)[:120]
             logger.info(f"[Tool Call] {tool_name}({args_preview})")
 
-            # 基于实际耗时的超时控制，默认 600 秒
+            # 基于实际耗时的单次工具超时控制（默认 600s = 10 分钟）
             tool_start = time.monotonic()
             try:
                 result = await asyncio.wait_for(
                     self._dispatch_tool(tool_name, args),
-                    timeout=self._tool_timeout,
+                    timeout=self._TOOL_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
                 elapsed = time.monotonic() - tool_start
                 logger.error(
                     f"[Tool Timeout] {tool_name} 超时: "
-                    f"elapsed={elapsed:.1f}s, timeout={self._tool_timeout}s"
+                    f"elapsed={elapsed:.1f}s, timeout={self._TOOL_TIMEOUT_SECONDS}s"
                 )
                 result = json.dumps({
                     "error": (
-                        f"工具 {tool_name} 执行超时: "
-                        f"已耗时 {elapsed:.1f}s，超过配置上限 {self._tool_timeout}s。"
-                        f"请在 config.yaml 的 agent.tool_timeout_seconds 中调整"
+                        f"工具 {tool_name} 执行超时"
+                        f"（{elapsed:.1f}s > {self._TOOL_TIMEOUT_SECONDS}s），"
+                        f"请在 config.yaml agent.tool_timeout_seconds 中调整"
                     )
                 }, ensure_ascii=False)
 
