@@ -79,11 +79,27 @@ class RAGConfig(BaseModel):
     rerank_enabled: bool = False
 
 
+class AgentConfig(BaseModel):
+    """Agent 运行参数"""
+    exec_batch_size: int = Field(default=1, description="Exec Agent 批量大小")
+    judge_batch_size: int = Field(default=1, description="Judge Agent 批量大小")
+    tool_timeout_seconds: float = Field(
+        default=600.0,
+        description="单次工具调用超时时间（秒），默认 10 分钟。"
+                    "BMC 测试中 IPMI/Redfish/SSH 命令可能耗时较长，"
+                    "基于实际耗时的超时比固定调用次数更合理",
+    )
+    max_tool_rounds: int = Field(
+        default=50,
+        description="LLM 对话最大轮次（安全上限，防止无限循环）",
+    )
+
+
 class AppConfig(BaseModel):
     """应用顶层配置"""
     providers: Dict[str, ProviderConfig]
     models: ModelsConfig
-    agent: Dict[str, Any] = Field(default_factory=dict)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
     rag: RAGConfig = Field(default_factory=RAGConfig)
     target: Dict[str, Any] = Field(default_factory=dict)
     storage: Dict[str, Any] = Field(default_factory=dict)
@@ -265,10 +281,14 @@ def load_config(config_path: str = "config/config.yaml") -> AppConfig:
     rag_raw = raw.get("rag", {})
     rag = RAGConfig(**{k: v for k, v in rag_raw.items() if k in RAGConfig.model_fields})
 
+    # --- 解析 Agent 运行参数 ---
+    agent_raw = raw.get("agent", {})
+    agent = AgentConfig(**{k: v for k, v in agent_raw.items() if k in AgentConfig.model_fields})
+
     cfg = AppConfig(
         providers=resolved_providers,
         models=models,
-        agent=raw.get("agent", {}),
+        agent=agent,
         rag=rag,
         target=raw.get("target", {}),
         storage=raw.get("storage", {}),
