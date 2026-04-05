@@ -1,0 +1,33 @@
+请对以下 Execution Record 进行严格判断。
+
+## 判断要求
+
+1. 验证所有预置条件是否满足
+2. 对每个步骤进行 expected vs actual 严格比对
+3. 验证证据链完整性
+4. 检查断言（assertions）是否全部通过
+5. 评估环境恢复状态
+6. 评估假 PASS 风险
+7. 先在 <thinking> 标签中进行结构化思考，然后输出 JSON + Markdown
+
+## 判断顺序提醒
+
+- 步骤未执行 --> FAIL
+- HTTP 状态码非 2xx --> FAIL
+- actual 为空或 null --> FAIL
+- expected 与 actual 不一致 --> FAIL
+- 证据缺失 --> FAIL
+- error_message 非空 --> FAIL
+- 以上都不满足 --> PASS
+
+## 输出格式
+
+1. 先输出 <thinking>...</thinking>（结构化思考过程）
+2. 然后输出一个纯 JSON 对象（不要用 ```json``` 包裹）
+3. 最后输出 Markdown 审计报告（用 ## AUDIT_REPORT_START 和 ## AUDIT_REPORT_END 包裹）
+
+---
+
+## Execution Record
+
+{execution_record_json}

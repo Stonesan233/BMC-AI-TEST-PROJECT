@@ -33,7 +33,7 @@ def ensure_shared_dirs(shared_dir: str) -> None:
         shared_dir: 共享目录根路径
     """
     root = Path(shared_dir)
-    for subdir in ["execution_records", "test_results", "evidence", "reports"]:
+    for subdir in ["execution_records", "test_results", "evidence", "reports", "audit_reports"]:
         (root / subdir).mkdir(parents=True, exist_ok=True)
 
 
