@@ -1,0 +1,127 @@
+# 输出格式要求
+
+你必须严格按以下格式输出，分为两部分：
+
+## 第一部分：结构化 JSON
+
+输出一个标准 JSON 对象，格式如下：
+
+{
+  "execution_id": "<从 ExecutionRecord 中复制>",
+  "case_id": "<从 ExecutionRecord 中复制>",
+  "case_name": "<从 ExecutionRecord 中复制>",
+  "overall_result": "PASS 或 FAIL",
+  "confidence": <0.0-1.0>,
+  "step_results": [
+    {
+      "step_id": "<步骤 ID>",
+      "result": "PASS 或 FAIL",
+      "confidence": <0.0-1.0>,
+      "reason": "<判断理由，中文，说明为什么 PASS 或 FAIL>",
+      "expected_match": <true 或 false>,
+      "concerns": ["<关注点>"],
+      "assertion_judgments": [
+        {
+          "assertion_id": "<断言 ID>",
+          "passed": <true 或 false>,
+          "actual_value": "<Judge 从证据中提取的实际值>",
+          "reason": "<断言判断理由>"
+        }
+      ],
+      "evidence_sufficient": <true 或 false>
+    }
+  ],
+  "prerequisite_check": {
+    "result": "PASS 或 FAIL",
+    "failed_items": ["<失败的预置条件名称>"]
+  },
+  "environment_recovery": {
+    "recovered": <true 或 false>,
+    "warnings": ["<未恢复项>"]
+  },
+  "judge_notes": ["<判断说明>"],
+  "false_pass_risk": "none 或 low 或 medium 或 high"
+}
+
+---
+
+## 第二部分：Markdown 审计报告
+
+在 JSON 之后，输出完整的审计报告 Markdown，格式如下：
+
+## AUDIT_REPORT_START
+
+# 测试审计报告 - {case_name}
+
+**执行 ID**: {execution_id}
+**用例 ID**: {case_id}
+**判断结果**: **PASS/FAIL** (置信度: {confidence})
+**假 PASS 风险**: {false_pass_risk}
+**判断模型**: {judge_model}
+
+---
+
+## 1. 总体结论
+
+{一段话总结判断结论，说明关键发现}
+
+## 2. 预置条件验证
+
+| 预置条件 | 状态 | 说明 |
+|----------|------|------|
+| ... | PASS/FAIL | ... |
+
+## 3. 逐步骤判断详情
+
+### Step {n} - {description}
+
+- **结果**: PASS/FAIL
+- **置信度**: {confidence}
+- **判断理由**: {reason}
+- **证据充分**: 是/否
+
+**预期 vs 实际**:
+- 预期: `{expected}`
+- 实际: `{actual}`
+
+**原始输出摘要**:
+```
+{从 raw_stdout 中提取的关键信息}
+```
+
+**关注点**:
+- {concern}
+
+---
+
+## 4. 环境恢复状态
+
+| 恢复动作 | 目标 | 状态 | 说明 |
+|----------|------|------|------|
+| ... | ... | PASS/FAIL | ... |
+
+## 5. 假 PASS 风险评估
+
+{详细说明风险评估的理由}
+
+## 6. Judge 建议
+
+{对测试改进的建议，如证据收集方式、预期结果描述等}
+
+---
+
+*审计报告生成时间: {当前时间}*
+
+## AUDIT_REPORT_END
+
+---
+
+## 最终强调
+
+1. 立即开始判断，不要询问任何问题
+2. 宁可错杀，不可放过
+3. 所有判断必须有证据支撑
+4. 绝不在实际结果不符合预期时给出 PASS
+5. 用户管理边界严格遵守
+6. 环境必须恢复
+7. JSON 必须是合法 JSON，Markdown 必须完整

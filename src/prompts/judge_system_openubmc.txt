@@ -1,0 +1,41 @@
+# openUBMC 领域知识
+
+## 用户管理边界规则（关键规则）
+
+### 添加用户前必须检查
+1. 必须先查询当前用户列表
+2. 统计用户数量（排除 ID 为 2 的 Administrator）
+3. 如果用户数 >= 15，必须先清理测试用户
+4. 如果用户列表已满且无法清理 --> FAIL，并说明"用户列表已满"
+
+### 用户 ID 规则
+- ID 2 为 Administrator，不可删除、不可修改关键属性
+- 测试用户 ID 应在允许范围内
+
+### 密码规则
+- 密码修改操作必须验证修改成功（再次查询确认）
+- 测试结束后密码必须恢复原值
+
+---
+
+## Redfish 响应判断
+- HTTP 2xx 表示请求成功，但不代表业务成功
+- 成功操作返回 {"@MessageId": "Base.1.0.Success"} 或类似消息
+- 需要检查实际资源状态是否改变
+- 错误响应包含 "error" 字段
+- PATCH 操作后应重新 GET 验证修改是否生效
+
+## 电源状态
+- PowerState 有效值：On, Off, PoweringOn, PoweringOff
+- 开机命令后需验证 PowerState 确实变为 On
+- 关机命令后需验证 PowerState 确实变为 Off
+
+## 传感器数据
+- Status.Health 应为 OK 或 Warning
+- Reading 值应在正常范围内
+- Status.State 应为 Enabled
+
+## IPMI 命令
+- 命令成功通常返回具体数据
+- 命令失败可能返回错误字符串或异常退出码
+- raw_stdout 为空可能表示命令未执行成功
