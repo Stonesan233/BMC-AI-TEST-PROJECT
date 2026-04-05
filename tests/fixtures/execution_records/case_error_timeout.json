@@ -1,0 +1,78 @@
+{
+  "schema_version": "2.1",
+  "execution_id": "exec_20260405_100004_timeout",
+  "case_id": "TC-SSH-003",
+  "case_name": "SSH 连接超时 - Exec 阶段出错",
+  "environment": {
+    "bmc_host": "192.168.1.200",
+    "bmc_user": "Administrator",
+    "ssh_host": "192.168.1.200",
+    "ssh_port": 10022
+  },
+  "test_case_info": {
+    "test_type": "异常测试",
+    "priority": "P2",
+    "source_path": "testcases/ssh_timeout.yaml"
+  },
+  "prerequisites": [
+    {"name": "BMC SSH 接口可达（默认端口 10022）", "status": "failed"},
+    {"name": "SSH 认证正常", "status": "not_verified"}
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "description": "通过 SSH 执行 ipmcget -d version 查询 BMC 版本",
+      "tool": "ssh",
+      "interface_preference": "cli",
+      "endpoint": null,
+      "method": null,
+      "request_body": null,
+      "command": "ipmcget -d version",
+      "expected": {
+        "exit_code": 0,
+        "stdout_contains": ["version"]
+      },
+      "actual": {
+        "exit_code": 0,
+        "error": "SSH 连接异常: Connection timed out after 30s"
+      },
+      "raw_stdout": "{\"error\": \"SSH 连接异常: Connection timed out after 30s\", \"command\": \"ipmcget -d version\", \"host\": \"192.168.1.200\", \"port\": 10022, \"mode\": \"non_interactive\", \"exit_code\": 0}",
+      "raw_stderr": "SSH 连接异常: Connection timed out after 30s",
+      "evidence": [
+        {
+          "evidence_id": "step_001_ev_001",
+          "step_id": "step_001",
+          "evidence_type": "error_log",
+          "content": "{\"error\": \"SSH 连接异常: Connection timed out after 30s\", \"command\": \"ipmcget -d version\", \"host\": \"192.168.1.200\", \"port\": 10022, \"mode\": \"non_interactive\", \"exit_code\": 0}",
+          "text_summary": null,
+          "metadata": {"timeout_seconds": 30},
+          "captured_at": "2026-04-05T10:03:30"
+        }
+      ],
+      "assertions": [
+        {
+          "assertion_id": "step_001_assert_001",
+          "assertion_type": "status_code",
+          "field_path": "exit_code",
+          "operator": "eq",
+          "expected_value": 0,
+          "actual_value": null,
+          "passed": null,
+          "note": "命令应成功执行"
+        }
+      ],
+      "status": "failed",
+      "http_status": null,
+      "error_message": "SSH 连接异常: Connection timed out after 30s",
+      "started_at": "2026-04-05T10:03:00",
+      "completed_at": "2026-04-05T10:03:30",
+      "keyword": null
+    }
+  ],
+  "environment_recovery_actions": [],
+  "consolidated_audit_draft": "# Exec Failure Report - SSH 连接超时 - Exec 阶段出错\n\n- Status: failed\n- Error: SSH 连接异常: Connection timed out after 30s\n",
+  "text_summary": null,
+  "started_at": "2026-04-05T10:03:00",
+  "completed_at": "2026-04-05T10:03:30",
+  "overall_status": "failed"
+}

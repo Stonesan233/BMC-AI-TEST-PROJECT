@@ -1,0 +1,58 @@
+{
+  "execution_id": "exec_20260405_100003_v1",
+  "case_id": "TC-IPMI-001",
+  "case_name": "IPMC 查询 BMC 固件版本 - v1.0 旧格式记录",
+  "environment": {
+    "bmc_host": "192.168.1.100",
+    "bmc_user": "Administrator",
+    "ipmi_host": "192.168.1.100",
+    "ipmi_port": 623
+  },
+  "test_case_info": {
+    "test_type": "集成测试",
+    "priority": "P1"
+  },
+  "prerequisites": [
+    {"name": "BMC IPMI 接口可达", "status": "completed"},
+    {"name": "IPMI 认证正常", "status": "completed"}
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "description": "通过 IPMI 查询 BMC 固件版本",
+      "tool": "ipmi",
+      "interface_preference": "ipmi",
+      "command": "mc info",
+      "expected": {
+        "exit_code": 0,
+        "stdout_contains": ["Firmware Revision"]
+      },
+      "actual": {
+        "exit_code": 0,
+        "Firmware Revision": "1.20",
+        "Manufacturer ID": "0x10000",
+        "Product ID": "0x1000"
+      },
+      "raw_stdout": "Device ID                 : 32\nDevice Revision           : 0\nFirmware Revision         : 1.20\nIPMI Version              : 2.0\nManufacturer ID           : 6553\nManufacturer Name         : Unknown (0x10000)\nProduct ID                : 4096 (0x1000)\nProduct Name              : Unknown\nAux Firmware Rev Info     : \n    0x00\n    0x00\n    0x00\n    0x00",
+      "raw_stderr": "",
+      "evidence": [
+        {
+          "evidence_id": "step_001_ev_001",
+          "step_id": "step_001",
+          "evidence_type": "ipmi_output",
+          "content": "Device ID                 : 32\nDevice Revision           : 0\nFirmware Revision         : 1.20\nIPMI Version              : 2.0\nManufacturer ID           : 6553\nManufacturer Name         : Unknown (0x10000)\nProduct ID                : 4096 (0x1000)\nProduct Name              : Unknown",
+          "metadata": {"exit_code": 0},
+          "captured_at": "2026-04-05T10:02:00"
+        }
+      ],
+      "status": "completed",
+      "http_status": null,
+      "error_message": null,
+      "started_at": "2026-04-05T10:02:00",
+      "completed_at": "2026-04-05T10:02:01"
+    }
+  ],
+  "started_at": "2026-04-05T10:02:00",
+  "completed_at": "2026-04-05T10:02:01",
+  "overall_status": "completed"
+}

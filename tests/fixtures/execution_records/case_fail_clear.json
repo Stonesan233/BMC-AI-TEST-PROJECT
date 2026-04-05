@@ -1,0 +1,174 @@
+{
+  "schema_version": "2.1",
+  "execution_id": "exec_20260405_100002_fail",
+  "case_id": "TC-USER-002",
+  "case_name": "用户管理 - 添加用户失败（证据缺失+断言不匹配）",
+  "environment": {
+    "bmc_host": "192.168.1.100",
+    "bmc_user": "Administrator",
+    "bmc_port": 443
+  },
+  "test_case_info": {
+    "test_type": "功能测试",
+    "priority": "P0",
+    "source_path": "testcases/user_add.yaml"
+  },
+  "prerequisites": [
+    {"name": "BMC 网络可达", "status": "completed"},
+    {"name": "Redfish 服务正常", "status": "completed"},
+    {"name": "用户列表未满（当前 5/15）", "status": "completed"}
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "description": "查询当前用户列表",
+      "tool": "redfish",
+      "interface_preference": "redfish",
+      "endpoint": "/redfish/v1/AccountService/Accounts",
+      "method": "GET",
+      "request_body": null,
+      "command": null,
+      "expected": {
+        "status_code": 200,
+        "user_count": 5
+      },
+      "actual": {
+        "http_status": 200,
+        "user_count": 5
+      },
+      "raw_stdout": "{\"http_status\": 200, \"body\": {\"@odata.id\": \"/redfish/v1/AccountService/Accounts\", \"Members@odata.count\": 5, \"Members\": [{\"@odata.id\": \"/redfish/v1/AccountService/Accounts/2\"}, {\"@odata.id\": \"/redfish/v1/AccountService/Accounts/3\"}, {\"@odata.id\": \"/redfish/v1/AccountService/Accounts/4\"}, {\"@odata.id\": \"/redfish/v1/AccountService/Accounts/5\"}, {\"@odata.id\": \"/redfish/v1/AccountService/Accounts/6\"}]}}",
+      "raw_stderr": "",
+      "evidence": [
+        {
+          "evidence_id": "step_001_ev_001",
+          "step_id": "step_001",
+          "evidence_type": "redfish_response",
+          "content": "{\"http_status\": 200, \"body\": {\"Members@odata.count\": 5, \"Members\": [{\"@odata.id\": \"/redfish/v1/AccountService/Accounts/2\"}]}}",
+          "text_summary": null,
+          "metadata": {"http_status": 200},
+          "captured_at": "2026-04-05T10:01:00"
+        }
+      ],
+      "assertions": [
+        {
+          "assertion_id": "step_001_assert_001",
+          "assertion_type": "status_code",
+          "field_path": "http_status",
+          "operator": "eq",
+          "expected_value": 200,
+          "actual_value": null,
+          "passed": null,
+          "note": "查询用户列表应返回 200"
+        }
+      ],
+      "status": "completed",
+      "http_status": 200,
+      "error_message": null,
+      "started_at": "2026-04-05T10:01:00",
+      "completed_at": "2026-04-05T10:01:01",
+      "keyword": null
+    },
+    {
+      "step_id": "step_002",
+      "description": "POST 创建新用户 testuser001",
+      "tool": "redfish",
+      "interface_preference": "redfish",
+      "endpoint": "/redfish/v1/AccountService/Accounts",
+      "method": "POST",
+      "request_body": {"UserName": "testuser001", "Password": "Test@123456", "RoleId": "Operator"},
+      "command": null,
+      "expected": {
+        "status_code": 201,
+        "UserName": "testuser001",
+        "RoleId": "Operator"
+      },
+      "actual": {
+        "http_status": 400,
+        "error": "CreateUser failed because the password does not meet requirements"
+      },
+      "raw_stdout": "{\"http_status\": 400, \"body\": {\"error\": {\"code\": \"Base.1.0.GeneralError\", \"message\": \"CreateUser failed because the password does not meet requirements\", \"messageExtendedInfo\": [{\"@odata.type\": \"#Message.v1_2_0.Message\", \"MessageId\": \"Base.1.0.CreateUserLimitReached\", \"Message\": \"CreateUser failed because the password does not meet requirements\", \"Severity\": \"Warning\", \"Resolution\": \"Ensure the password meets the configured password policy.\"}]}}}",
+      "raw_stderr": "",
+      "evidence": [
+        {
+          "evidence_id": "step_002_ev_001",
+          "step_id": "step_002",
+          "evidence_type": "redfish_response",
+          "content": "{\"http_status\": 400, \"body\": {\"error\": {\"code\": \"Base.1.0.GeneralError\", \"message\": \"CreateUser failed because the password does not meet requirements\"}}}",
+          "text_summary": null,
+          "metadata": {"http_status": 400},
+          "captured_at": "2026-04-05T10:01:02"
+        }
+      ],
+      "assertions": [
+        {
+          "assertion_id": "step_002_assert_001",
+          "assertion_type": "status_code",
+          "field_path": "http_status",
+          "operator": "eq",
+          "expected_value": 201,
+          "actual_value": null,
+          "passed": null,
+          "note": "创建用户应返回 201 Created"
+        },
+        {
+          "assertion_id": "step_002_assert_002",
+          "assertion_type": "field_equals",
+          "field_path": "body.UserName",
+          "operator": "eq",
+          "expected_value": "testuser001",
+          "actual_value": null,
+          "passed": null,
+          "note": "响应中应包含创建的用户名"
+        }
+      ],
+      "status": "failed",
+      "http_status": 400,
+      "error_message": "HTTP 400: CreateUser failed because the password does not meet requirements",
+      "started_at": "2026-04-05T10:01:02",
+      "completed_at": "2026-04-05T10:01:03",
+      "keyword": null
+    },
+    {
+      "step_id": "step_003",
+      "description": "验证用户已创建",
+      "tool": "redfish",
+      "interface_preference": "redfish",
+      "endpoint": "/redfish/v1/AccountService/Accounts",
+      "method": "GET",
+      "request_body": null,
+      "command": null,
+      "expected": {
+        "status_code": 200,
+        "user_count": 6
+      },
+      "actual": null,
+      "raw_stdout": null,
+      "raw_stderr": "Step skipped due to previous failure",
+      "evidence": [],
+      "assertions": [
+        {
+          "assertion_id": "step_003_assert_001",
+          "assertion_type": "field_equals",
+          "field_path": "Members@odata.count",
+          "operator": "eq",
+          "expected_value": 6,
+          "actual_value": null,
+          "passed": null,
+          "note": "用户列表应增加到 6"
+        }
+      ],
+      "status": "skipped",
+      "http_status": null,
+      "error_message": "前置步骤失败，跳过验证",
+      "started_at": null,
+      "completed_at": null,
+      "keyword": null
+    }
+  ],
+  "environment_recovery_actions": [],
+  "consolidated_audit_draft": "# Exec Agent Audit Draft - 用户管理 - 添加用户失败\n\n- Execution ID: exec_20260405_100002_fail\n- Case ID: TC-USER-002\n- Overall Status: failed\n- Steps: 3\n- Started: 2026-04-05T10:01:00\n- Completed: 2026-04-05T10:01:03\n\n## Prerequisites\n- BMC 网络可达: completed\n- Redfish 服务正常: completed\n- 用户列表未满（当前 5/15）: completed\n\n## Steps Overview\n- step_001: completed | redfish GET /redfish/v1/AccountService/Accounts\n- step_002: failed | redfish POST /redfish/v1/AccountService/Accounts [ERROR: HTTP 400: CreateUser failed because the password does not meet requirements]\n- step_003: skipped | redfish GET /redfish/v1/AccountService/Accounts [ERROR: 前置步骤失败，跳过验证]\n",
+  "text_summary": null,
+  "started_at": "2026-04-05T10:01:00",
+  "completed_at": "2026-04-05T10:01:03",
+  "overall_status": "failed"
+}

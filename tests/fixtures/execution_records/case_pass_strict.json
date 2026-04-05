@@ -1,0 +1,100 @@
+{
+  "schema_version": "2.1",
+  "execution_id": "exec_20260405_100001_strict",
+  "case_id": "TC-REDFISH-001",
+  "case_name": "Redfish GET ServiceRoot - 表面通过但存在微小不一致",
+  "environment": {
+    "bmc_host": "192.168.1.100",
+    "bmc_user": "Administrator",
+    "bmc_port": 443
+  },
+  "test_case_info": {
+    "test_type": "集成测试",
+    "priority": "P0",
+    "source_path": "testcases/redfish_service_root.yaml"
+  },
+  "prerequisites": [
+    {"name": "BMC 网络可达", "status": "completed"},
+    {"name": "Redfish 服务正常", "status": "completed"},
+    {"name": "认证凭据有效", "status": "completed"}
+  ],
+  "steps": [
+    {
+      "step_id": "step_001",
+      "description": "GET /redfish/v1 验证 Service Root 基本信息",
+      "tool": "redfish",
+      "interface_preference": "redfish",
+      "endpoint": "/redfish/v1",
+      "method": "GET",
+      "request_body": null,
+      "command": null,
+      "expected": {
+        "status_code": 200,
+        "RedfishVersion": "1.20.1",
+        "Vendor": "Huawei"
+      },
+      "actual": {
+        "http_status": 200,
+        "RedfishVersion": "1.20.1",
+        "Vendor": "HUAWEI"
+      },
+      "raw_stdout": "{\"http_status\": 200, \"headers\": {\"content-type\": \"application/json\"}, \"body\": {\"@odata.type\": \"#ServiceRoot.v1_15_0.ServiceRoot\", \"@odata.context\": \"/redfish/v1/$metadata#ServiceRoot.ServiceRoot\", \"@odata.etag\": \"W/\\\"A0C8BC45\\\"\", \"@odata.id\": \"/redfish/v1\", \"Id\": \"RootService\", \"Name\": \"Root Service\", \"RedfishVersion\": \"1.20.1\", \"Vendor\": \"HUAWEI\", \"UUID\": \"00000000-0000-0000-0000-000000000001\", \"Product\": \"openUBMC\", \"ProtocolFeaturesSupported\": {\"ExcerptQuery\": false, \"DeepOperations\": \"None\", \"ExpandQuery\": {\"ExpandAll\": true, \"Levels\": 6, \"NoLinks\": true, \"SelectQuery\": true}}}}",
+      "raw_stderr": "",
+      "evidence": [
+        {
+          "evidence_id": "step_001_ev_001",
+          "step_id": "step_001",
+          "evidence_type": "redfish_response",
+          "content": "{\"http_status\": 200, \"headers\": {\"content-type\": \"application/json\"}, \"body\": {\"@odata.type\": \"#ServiceRoot.v1_15_0.ServiceRoot\", \"RedfishVersion\": \"1.20.1\", \"Vendor\": \"HUAWEI\", \"UUID\": \"00000000-0000-0000-0000-000000000001\"}}",
+          "text_summary": null,
+          "metadata": {"http_status": 200, "response_time_ms": 45},
+          "captured_at": "2026-04-05T10:00:01"
+        }
+      ],
+      "assertions": [
+        {
+          "assertion_id": "step_001_assert_001",
+          "assertion_type": "status_code",
+          "field_path": "http_status",
+          "operator": "eq",
+          "expected_value": 200,
+          "actual_value": null,
+          "passed": null,
+          "note": "HTTP 状态码必须为 200"
+        },
+        {
+          "assertion_id": "step_001_assert_002",
+          "assertion_type": "field_equals",
+          "field_path": "body.RedfishVersion",
+          "operator": "eq",
+          "expected_value": "1.20.1",
+          "actual_value": null,
+          "passed": null,
+          "note": "RedfishVersion 精确匹配"
+        },
+        {
+          "assertion_id": "step_001_assert_003",
+          "assertion_type": "field_equals",
+          "field_path": "body.Vendor",
+          "operator": "eq",
+          "expected_value": "Huawei",
+          "actual_value": null,
+          "passed": null,
+          "note": "Vendor 大小写敏感匹配：expected=Huawei, actual=HUAWEI"
+        }
+      ],
+      "status": "completed",
+      "http_status": 200,
+      "error_message": null,
+      "started_at": "2026-04-05T10:00:00",
+      "completed_at": "2026-04-05T10:00:01",
+      "keyword": null
+    }
+  ],
+  "environment_recovery_actions": [],
+  "consolidated_audit_draft": "# Exec Agent Audit Draft - Redfish GET ServiceRoot\n\n- Execution ID: exec_20260405_100001_strict\n- Case ID: TC-REDFISH-001\n- Overall Status: completed\n- Steps: 1\n- Started: 2026-04-05T10:00:00\n- Completed: 2026-04-05T10:00:01\n\n## Prerequisites\n- BMC 网络可达: completed\n- Redfish 服务正常: completed\n- 认证凭据有效: completed\n\n## Steps Overview\n- step_001: completed | redfish GET /redfish/v1\n",
+  "text_summary": null,
+  "started_at": "2026-04-05T10:00:00",
+  "completed_at": "2026-04-05T10:00:01",
+  "overall_status": "completed"
+}
