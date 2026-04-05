@@ -86,6 +86,14 @@ class Evidence(BaseModel):
         ...,
         description="证据内容，原始数据内联存储（v2.1 要求不使用文件引用）"
     )
+    text_summary: Optional[str] = Field(
+        default=None,
+        description=(
+            "多模态证据的文本摘要（v2.1 新增）。"
+            "当 evidence_type 为 image/video/screenshot 时，用文本描述视觉内容。"
+            "v2.x 版本仅通过文本描述处理，v3.0 将支持完整视觉分析。"
+        )
+    )
     metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="证据元数据，如 HTTP 状态码、执行时间、命令参数等"
@@ -345,9 +353,10 @@ class ExecutionRecord(BaseModel):
         completed_at: 执行完成时间
         overall_status: 整体执行状态
     """
-    schema_version: str = Field(
+    schema_version: Literal["2.1"] = Field(
         default=CURRENT_SCHEMA_VERSION,
-        description=f"Schema 版本号，当前版本: {CURRENT_SCHEMA_VERSION}"
+        frozen=True,
+        description=f"Schema 版本号，强制为 '{CURRENT_SCHEMA_VERSION}'，不可修改"
     )
     execution_id: str = Field(..., description="执行记录唯一标识符")
     case_id: str = Field(..., description="测试用例 ID")
@@ -390,7 +399,10 @@ class ExecutionRecord(BaseModel):
     )
     consolidated_audit_draft: Optional[str] = Field(
         default=None,
-        description="Exec Agent 生成的审计草案文本，供 Judge 参考（v2.1 新增）"
+        description=(
+            "Exec Agent 生成的审计草案文本，供 Judge 参考（v2.1 新增）。"
+            "在 Exec 执行结束时自动生成，包含执行摘要、步骤概览、环境恢复状态。"
+        )
     )
     text_summary: Optional[str] = Field(
         default=None,
@@ -415,6 +427,27 @@ class ExecutionRecord(BaseModel):
         default="running",
         description="整体执行状态，可选 'running', 'completed', 'failed', 'interrupted'"
     )
+
+    # ------------------------------------------------------------------
+    # v1 -> v2.1 迁移（类方法，支持外部显式调用）
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def migrate_from_v1(cls, old_data: Dict[str, Any]) -> "ExecutionRecord":
+        """
+        将 v1.0 格式的 ExecutionRecord 字典迁移为 v2.1 ExecutionRecord 实例。
+
+        v1.0 数据特征：无 schema_version 字段或 schema_version == "1.0"。
+        迁移操作：添加 v2.1 新增字段默认值，保留所有 v1 字段不变。
+
+        Args:
+            old_data: v1.0 格式的 ExecutionRecord 字典
+
+        Returns:
+            ExecutionRecord v2.1 实例
+        """
+        migrated = migrate_v1_to_v2_1(old_data)
+        return cls(**migrated)
 
 
 # ============================================================
@@ -557,6 +590,10 @@ class TestResult(BaseModel):
     false_pass_risk: Literal["none", "low", "medium", "high"] = Field(
         default="none",
         description="假 PASS 风险评估等级"
+    )
+    risk_notes: List[str] = Field(
+        default_factory=list,
+        description="假 PASS 风险的详细说明（v2.1 新增），补充 false_pass_risk 的理由"
     )
     audit_report_markdown: Optional[str] = Field(
         default=None,

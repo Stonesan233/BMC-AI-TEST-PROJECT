@@ -335,6 +335,7 @@ def build_test_result_from_json(
         judge_model=judge_model,
         judge_duration_seconds=duration_seconds,
         false_pass_risk=_safe_enum(parsed.get("false_pass_risk"), _RISK_LEVELS, "none"),
+        risk_notes=parsed.get("risk_notes", []),
         audit_report_markdown=audit_markdown,
     )
 
@@ -377,6 +378,7 @@ def build_error_test_result(
         judge_model=judge_model,
         judge_duration_seconds=duration_seconds,
         false_pass_risk="high",
+        risk_notes=["Judge 引擎异常，无法进行风险评估，默认 high"],
         audit_report_markdown=None,
     )
 

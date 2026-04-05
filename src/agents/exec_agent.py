@@ -1898,12 +1898,73 @@ class ExecAgent:
         )
 
     def _force_override_timestamps(self, record: ExecutionRecord, started_at: datetime) -> ExecutionRecord:
-        """强制覆盖时间戳和 execution_id（不信任 LLM）。"""
+        """
+        强制覆盖时间戳和 execution_id（不信任 LLM）。
+
+        同时生成 consolidated_audit_draft（v2.1 架构要求），
+        作为 Exec 对执行结果的自我总结，供 Judge Agent 参考。
+        """
         now = datetime.now()
         record.execution_id = f"exec_{now.strftime('%Y%m%d_%H%M%S')}"
         record.started_at = started_at
         record.completed_at = now
+
+        # 生成 consolidated_audit_draft（v2.1 新增）
+        if record.consolidated_audit_draft is None:
+            record.consolidated_audit_draft = self._generate_audit_draft(record)
+
         return record
+
+    def _generate_audit_draft(self, record: ExecutionRecord) -> str:
+        """
+        生成 Exec Agent 的审计草案 Markdown（v2.1 架构要求）。
+
+        这是 Exec Agent 对自身执行结果的客观总结，不包含任何判断（PASS/FAIL），
+        仅陈述事实。Judge Agent 可参考此草案加速判断，但不依赖它做最终决定。
+        """
+        lines = [
+            f"# Exec Agent Audit Draft - {record.case_name}",
+            "",
+            f"- Execution ID: {record.execution_id}",
+            f"- Case ID: {record.case_id}",
+            f"- Overall Status: {record.overall_status}",
+            f"- Steps: {len(record.steps)}",
+            f"- Started: {record.started_at}",
+            f"- Completed: {record.completed_at}",
+            "",
+        ]
+
+        # 预置条件
+        if record.prerequisites:
+            lines.append("## Prerequisites")
+            for p in record.prerequisites:
+                name = p.get("name", "-")
+                status = p.get("status", "-")
+                lines.append(f"- {name}: {status}")
+            lines.append("")
+
+        # 步骤概览
+        lines.append("## Steps Overview")
+        for step in record.steps:
+            status_val = step.status.value if hasattr(step.status, "value") else str(step.status)
+            tool_info = step.tool
+            if step.endpoint:
+                tool_info += f" {step.method or 'GET'} {step.endpoint}"
+            elif step.command:
+                tool_info += f" {step.command[:80]}"
+
+            err_tag = f" [ERROR: {step.error_message}]" if step.error_message else ""
+            lines.append(f"- {step.step_id}: {status_val} | {tool_info}{err_tag}")
+        lines.append("")
+
+        # 环境恢复
+        if record.environment_recovery_actions:
+            lines.append("## Environment Recovery")
+            for action in record.environment_recovery_actions:
+                lines.append(f"- {action.action_type} ({action.target}): {action.status}")
+            lines.append("")
+
+        return "\n".join(lines)
 
     def _try_fix_malformed_json(self, raw: str) -> Optional[dict]:
         """
@@ -2076,6 +2137,10 @@ class ExecAgent:
             started_at=started_at,
             completed_at=completed_at,
             overall_status="failed",
+            consolidated_audit_draft=(
+                f"# Exec Failure Report - {case.get('name', case.get('用例_名称', 'unknown'))}\n\n"
+                f"- Status: failed\n- Error: {error_msg or '执行异常'}\n"
+            ),
         )
 
     def _save_record(self, record: ExecutionRecord) -> None:

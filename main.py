@@ -14,7 +14,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # Windows 控制台 UTF-8 输出（避免 LLM 输出中的 Unicode 字符导致 GBK 编码错误）
 if sys.stdout:
@@ -178,17 +178,42 @@ async def run_single_case(
     case: Dict[str, Any],
     exec_record: ExecutionRecord,
     config: Dict[str, Any],
-    judge_agent: JudgeAgent,
+    judge_agent: Optional[JudgeAgent],
 ) -> Dict[str, Any]:
-    """执行单个用例的完整流程：保存记录 -> Judge -> 保存结果 -> 生成报告"""
+    """
+    执行单个用例的完整流程：保存记录 -> (Judge) -> 保存结果 -> 生成报告。
+
+    当 judge_agent 为 None 时（--no-judge 模式），跳过 Judge 步骤，
+    基于 Exec 步骤状态生成模拟 TestResult。
+    Judge 调用失败时整体标记为 ERROR，但保留 partial report。
+    """
     shared_dir = config.get("storage", {}).get("shared_dir", "./shared")
     case_name = exec_record.case_name
 
     # Step 1: 保存 ExecutionRecord
     record_path = save_execution_record(exec_record, shared_dir)
 
-    # Step 2: 调用 Judge Agent
-    test_result = await call_judge_agent(exec_record, config, judge_agent)
+    # Step 2: 调用 Judge Agent（如果启用）
+    if judge_agent is not None:
+        try:
+            test_result = await call_judge_agent(exec_record, config, judge_agent)
+        except Exception as e:
+            # Judge 失败 -> 构建 ERROR 级别 TestResult，保留 partial report
+            print(f"[ERROR] Judge Agent 调用异常: {e}")
+            from src.agents.judge_agent import build_error_test_result
+            test_result = build_error_test_result(
+                execution_record=exec_record,
+                judge_model=getattr(judge_agent, '_judge_comp', None),
+                error_message=str(e),
+            )
+            # 仍然保存 partial report
+            test_result.audit_report_markdown = (
+                f"# Judge Error - {case_name}\n\n"
+                f"Judge Agent 调用异常，结果不可信。\n\n**Error**: {e}\n"
+            )
+    else:
+        # --no-judge 模式：基于 Exec 步骤状态生成简单 TestResult
+        test_result = _build_skip_judge_result(exec_record)
 
     # Step 3: 保存 TestResult
     result_path = save_test_result(test_result, shared_dir)
@@ -199,7 +224,8 @@ async def run_single_case(
     result_icon = "[PASS]" if test_result.overall_result == "PASS" else "[FAIL]"
     confidence_str = f"{test_result.confidence:.2f}"
     risk_str = test_result.false_pass_risk
-    print(f"[OK] 用例完成 --> {case_name} [{result_icon}] (conf={confidence_str}, risk={risk_str})")
+    judge_tag = "" if judge_agent else " (no-judge)"
+    print(f"[OK] 用例完成 --> {case_name} [{result_icon}] (conf={confidence_str}, risk={risk_str}){judge_tag}")
 
     return {
         "case_name": case_name,
@@ -212,6 +238,45 @@ async def run_single_case(
     }
 
 
+def _build_skip_judge_result(exec_record: ExecutionRecord) -> TestResult:
+    """
+    --no-judge 模式下，基于 Exec 步骤状态生成简单的 TestResult。
+
+    注意：此结果未经 LLM 严格判断，假 PASS 风险为 high。
+    """
+    step_judgments = []
+    all_pass = True
+    for step in exec_record.steps:
+        is_pass = step.status == StepStatus.COMPLETED
+        if not is_pass:
+            all_pass = False
+        step_judgments.append(StepJudgment(
+            step_id=step.step_id,
+            result="PASS" if is_pass else "FAIL",
+            confidence=0.5,
+            reason=f"未启用 Judge，基于步骤状态自动判断: {step.status.value}",
+            expected_match=is_pass,
+            concerns=["no-judge 模式，未经 LLM 严格验证"],
+            evidence_sufficient=bool(step.evidence),
+        ))
+
+    return TestResult(
+        execution_id=exec_record.execution_id,
+        case_id=exec_record.case_id,
+        case_name=exec_record.case_name,
+        overall_result="PASS" if all_pass else "FAIL",
+        confidence=0.5,
+        step_results=step_judgments,
+        prerequisite_check={"result": "SKIP", "failed_items": []},
+        environment_recovery={"recovered": True, "warnings": []},
+        judge_notes=["no-judge 模式，未经 Judge Agent 严格判断，结果仅供参考"],
+        judge_model="none (no-judge)",
+        judge_duration_seconds=0.0,
+        false_pass_risk="high",
+        risk_notes=["未启用 Judge Agent，所有判断基于步骤状态自动推导"],
+    )
+
+
 # ============================================================
 # 批量执行逻辑
 # ============================================================
@@ -221,7 +286,7 @@ async def run_batch(
     batch: List[Dict[str, Any]],
     batch_index: int,
     config: Dict[str, Any],
-    judge_agent: JudgeAgent,
+    judge_agent: Optional[JudgeAgent],
 ) -> List[Dict[str, Any]]:
     """执行一批测试用例（1~3个）"""
     print(f"\n{'='*60}")
@@ -302,6 +367,7 @@ async def main_async(args: argparse.Namespace) -> int:
 
     # 启动信息
     judge_model = f"{app_config.models.judge.provider}/{app_config.models.judge.model}"
+    judge_status = "ON" if args.judge else "OFF"
     print(f"\nopenUBMC AI 测试框架 (Judge v2.1)")
     print(f"{'='*60}")
     print(f"  配置文件:   {args.config}")
@@ -309,7 +375,7 @@ async def main_async(args: argparse.Namespace) -> int:
     print(f"  批量大小:   {exec_batch_size}")
     print(f"  共享目录:   {shared_dir}")
     print(f"  Exec 模型:  {app_config.models.exec.provider}/{app_config.models.exec.model}")
-    print(f"  Judge 模型: {judge_model}")
+    print(f"  Judge 模型: {judge_model} [{judge_status}]")
     print(f"{'='*60}")
 
     if not cases:
@@ -327,19 +393,21 @@ async def main_async(args: argparse.Namespace) -> int:
         await client_factory.close()
         return 1
 
-    # 8. 初始化 Judge Agent
-    try:
-        judge_agent = JudgeAgent(
-            config=app_config,
-            client_factory=client_factory,
-            shared_dir=shared_dir,
-        )
-        print(f"[OK] Judge Agent 初始化成功 (model={judge_model})")
-    except Exception as e:
-        print(f"[ERROR] Judge Agent 初始化失败: {e}")
-        await exec_agent.close()
-        await client_factory.close()
-        return 1
+    # 8. 初始化 Judge Agent（如果 --judge 启用）
+    judge_agent: Optional[JudgeAgent] = None
+    if args.judge:
+        try:
+            judge_agent = JudgeAgent(
+                config=app_config,
+                client_factory=client_factory,
+                shared_dir=shared_dir,
+            )
+            print(f"[OK] Judge Agent 初始化成功 (model={judge_model})")
+        except Exception as e:
+            print(f"[WARN] Judge Agent 初始化失败: {e}，将以 --no-judge 模式运行")
+            judge_agent = None
+    else:
+        print("[INFO] --no-judge 模式，跳过 Judge Agent 初始化")
 
     # 9. 分组执行
     batches = group_cases_by_batch(cases, exec_batch_size)
@@ -406,6 +474,18 @@ def parse_args() -> argparse.Namespace:
         "--excel",
         nargs="+",
         help="Excel 用例路径（.xlsx 文件或目录，自动转换为 YAML）"
+    )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        default=True,
+        help="启用 Judge Agent 进行严格判断（默认开启）"
+    )
+    parser.add_argument(
+        "--no-judge",
+        action="store_false",
+        dest="judge",
+        help="禁用 Judge Agent，仅执行不判断"
     )
     return parser.parse_args()
 
