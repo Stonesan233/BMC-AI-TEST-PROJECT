@@ -2,7 +2,14 @@
 """
 Environment Recovery Tool - v1.0.1 精简版
 
-恢复流程: OS SSH 检查 -> Redfish ForcePowerCycle -> BMC 认证 -> ipmitool 重置 user 2
+恢复流程（决策树）:
+  纯 BMC 模式（无 os_host）:
+    -> 只做 BMC 认证检查，绝不执行 ForcePowerCycle
+  OS + BMC 模式:
+    OS 可达 -> 跳过 ForcePowerCycle -> 检查 BMC 认证 -> 失败则 ipmitool 重置 user 2
+    OS 不可达 -> ForcePowerCycle 上电 -> 等待主机启动 -> 检查 BMC 认证 -> 失败则重置 user 2
+
+注意: ForcePowerCycle 只对主机 Power Cycle，不会重启 BMC，不会使 Redfish Session 失效。
 脚本形式 tool，供 ExecAgent 调用。
 """
 
@@ -48,40 +55,31 @@ class EnvironmentRecoveryTool:
         logger.info("[Recovery] === 开始 ===")
 
         if not self.os_host:
-            # ---- 纯 BMC 模式：无 OS，只做认证检查，不上电 ----
-            logger.info("[Recovery] 纯 BMC 模式（无 os_host），仅检查 BMC 认证")
+            # ---- 纯 BMC 模式：无 OS 配置，绝不执行 ForcePowerCycle ----
+            logger.info("[Recovery] Pure BMC mode, skip power cycle, only check auth")
             auth_ok = await self._check_bmc_auth()
             if not auth_ok:
                 warnings.append("BMC 认证失败且无 OS 端恢复路径")
+
         else:
-            # ---- OS + BMC 模式 ----
             os_ok = await self._check_os_ssh()
-
             if os_ok:
-                # OS 正常，无需上电，直接检查 BMC 认证
-                logger.info("[Recovery] OS 正常，跳过上电")
+                # ---- OS 可达：跳过 ForcePowerCycle ----
+                logger.info("[Recovery] OS reachable, skip power cycle")
                 auth_ok = await self._check_bmc_auth()
+                if not auth_ok:
+                    auth_ok = await self._os_ipmitool_reset_user2()
             else:
-                # OS 不可达 -> 执行 ForcePowerCycle 上电
-                warnings.append("OS SSH 不可达")
+                # ---- OS 不可达：执行 ForcePowerCycle 上电（对主机） ----
+                logger.warning("[Recovery] OS unreachable, execute Redfish ForcePowerCycle")
                 power_ok = await self._redfish_force_power_cycle()
-                if not power_ok:
-                    warnings.append("Redfish ForcePowerCycle 失败")
-                    # fallback: OS 端 ipmitool（OS 刚不可达，但 ipmitool 走 IPMI 直连）
-                    power_ok = await self._os_ssh_exec(
-                        f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} "
-                        f"-P {self.bmc_password} chassis power cycle"
-                    )
-                    if not power_ok:
-                        warnings.append("OS ipmitool power cycle 也失败")
+                if power_ok:
+                    logger.info(f"[Recovery] 等待主机启动 ({self.wait_min}s)")
+                    await asyncio.sleep(self.wait_min)
 
-                # 等待 BMC 就绪 + 检查认证
-                auth_ok = await self._wait_and_check_bmc_auth()
-
-            # 认证失败 -> 从 OS 重置 user 2
-            if not auth_ok:
-                logger.warning("[Recovery] BMC 认证失败，从 OS 重置 user 2")
-                auth_ok = await self._os_ipmitool_reset_user2()
+                auth_ok = await self._check_bmc_auth()
+                if not auth_ok and self.os_host:
+                    auth_ok = await self._os_ipmitool_reset_user2()
 
         tag = "[OK]" if auth_ok else "[FAIL]"
         logger.info(f"[Recovery] === {tag} {time.monotonic() - t0:.0f}s ===")
