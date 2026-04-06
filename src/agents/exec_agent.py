@@ -528,18 +528,7 @@ class ExecAgent:
         )
 
         # 环境恢复工具
-        self._recovery_tool = EnvironmentRecoveryTool(
-            bmc_host=self.bmc_host,
-            bmc_port=self.bmc_port,
-            bmc_user=self.bmc_user,
-            bmc_password=self.bmc_password,
-            verify_ssl=self._verify_ssl,
-            os_host=target.get("os_host"),
-            os_user=target.get("os_user"),
-            os_password=target.get("os_password"),
-            ipmi_host=self.ipmi_host,
-            ipmi_port=self.ipmi_port,
-        )
+        self._recovery_tool = EnvironmentRecoveryTool(target)
 
         # RAG 混合检索器 (HybridRetriever + QueryRewriter)
         rag_cfg = self._app_config.rag
