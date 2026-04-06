@@ -224,6 +224,8 @@ class QueryRewriter:
         api_key: Optional[str] = None,
         base_url: str = "https://your-openai-service/api/v1/",
         timeout: float = DEFAULT_TIMEOUT,
+        verify_ssl: bool = True,
+        trust_env: bool = False,
     ):
         if not api_key:
             raise ValueError(
@@ -233,7 +235,11 @@ class QueryRewriter:
 
         self.model = model
 
-        self._http_client = httpx.AsyncClient(timeout=timeout)
+        self._http_client = httpx.AsyncClient(
+            timeout=timeout,
+            verify=verify_ssl,
+            trust_env=trust_env,
+        )
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -241,7 +247,8 @@ class QueryRewriter:
         )
 
         logger.info(
-            f"QueryRewriter 初始化: model={model}, base_url={base_url}"
+            f"QueryRewriter 初始化: model={model}, base_url={base_url}, "
+            f"verify_ssl={verify_ssl}, trust_env={trust_env}"
         )
 
     async def close(self):

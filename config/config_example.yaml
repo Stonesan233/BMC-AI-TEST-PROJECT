@@ -126,6 +126,11 @@ rag:
   chroma_path: "./shared/rag_index"        # Chroma 持久化目录
   collection_name: "openubmc_rag"          # Collection 名称
 
+  # -- SSL / 代理 / 超时（内网私有化部署） --
+  verify_ssl: false                        # 是否验证 SSL 证书（内网自签名证书设为 false）
+  trust_env: false                         # 是否信任系统代理环境变量（内网 407 问题设为 false）
+  timeout: 30                              # HTTP 超时（秒）
+
   # -- 混合检索参数 --
   alpha: 0.7                               # 向量检索权重 (0.0~1.0), BM25 权重 = 1 - alpha
   top_k: 3                                 # 返回结果数量 (建议 3~5)

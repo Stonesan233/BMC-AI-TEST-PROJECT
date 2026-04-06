@@ -57,6 +57,9 @@ class HybridRetriever:
         enable_rewrite: bool = False,
         rewrite_provider: Optional[ProviderConfig] = None,
         rewrite_model: str = "qwen3.5-plus",
+        verify_ssl: bool = True,
+        trust_env: bool = False,
+        timeout: int = 30,
     ):
         self.alpha = alpha
 
@@ -79,10 +82,13 @@ class HybridRetriever:
                         api_key=rewrite_provider.api_key,
                         base_url=rewrite_provider.base_url,
                         timeout=rewrite_provider.timeout,
+                        verify_ssl=verify_ssl,
+                        trust_env=trust_env,
                     )
                     logger.info(
                         f"Query Rewriter 已启用 "
-                        f"(model={rewrite_model}, base_url={rewrite_provider.base_url})"
+                        f"(model={rewrite_model}, base_url={rewrite_provider.base_url}, "
+                        f"verify_ssl={verify_ssl}, trust_env={trust_env})"
                     )
                 except Exception as e:
                     logger.warning(f"Query Rewriter 初始化失败，已禁用: {e}")

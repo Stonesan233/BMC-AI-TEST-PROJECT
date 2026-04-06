@@ -614,6 +614,9 @@ class ExecAgent:
             enable_rewrite=self._rag_rewrite_enabled,
             rewrite_provider=self._app_config.providers.get(rewrite_model_cfg.provider),
             rewrite_model=rewrite_model_cfg.model,
+            verify_ssl=rag_cfg.verify_ssl,
+            trust_env=rag_cfg.trust_env,
+            timeout=rag_cfg.timeout,
         )
 
         # Embedding 客户端（通过 ClientFactory 统一创建）
