@@ -47,28 +47,41 @@ class EnvironmentRecoveryTool:
         t0 = time.monotonic()
         logger.info("[Recovery] === 开始 ===")
 
-        os_ok = await self._check_os_ssh()
-        if not os_ok:
-            warnings.append("OS SSH 不可达")
+        if not self.os_host:
+            # ---- 纯 BMC 模式：无 OS，只做认证检查，不上电 ----
+            logger.info("[Recovery] 纯 BMC 模式（无 os_host），仅检查 BMC 认证")
+            auth_ok = await self._check_bmc_auth()
+            if not auth_ok:
+                warnings.append("BMC 认证失败且无 OS 端恢复路径")
+        else:
+            # ---- OS + BMC 模式 ----
+            os_ok = await self._check_os_ssh()
 
-        power_ok = await self._redfish_force_power_cycle()
-        if not power_ok:
-            warnings.append("Redfish ForcePowerCycle 失败")
             if os_ok:
-                power_ok = await self._os_ssh_exec(
-                    f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} "
-                    f"-P {self.bmc_password} chassis power cycle"
-                )
-                if power_ok:
-                    await asyncio.sleep(self.wait_min)
-                else:
-                    warnings.append("OS ipmitool power cycle 也失败")
+                # OS 正常，无需上电，直接检查 BMC 认证
+                logger.info("[Recovery] OS 正常，跳过上电")
+                auth_ok = await self._check_bmc_auth()
+            else:
+                # OS 不可达 -> 执行 ForcePowerCycle 上电
+                warnings.append("OS SSH 不可达")
+                power_ok = await self._redfish_force_power_cycle()
+                if not power_ok:
+                    warnings.append("Redfish ForcePowerCycle 失败")
+                    # fallback: OS 端 ipmitool（OS 刚不可达，但 ipmitool 走 IPMI 直连）
+                    power_ok = await self._os_ssh_exec(
+                        f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} "
+                        f"-P {self.bmc_password} chassis power cycle"
+                    )
+                    if not power_ok:
+                        warnings.append("OS ipmitool power cycle 也失败")
 
-        auth_ok = await self._wait_and_check_bmc_auth()
+                # 等待 BMC 就绪 + 检查认证
+                auth_ok = await self._wait_and_check_bmc_auth()
 
-        if not auth_ok and os_ok:
-            logger.warning("[Recovery] BMC 认证失败，从 OS 重置 user 2")
-            auth_ok = await self._os_ipmitool_reset_user2()
+            # 认证失败 -> 从 OS 重置 user 2
+            if not auth_ok:
+                logger.warning("[Recovery] BMC 认证失败，从 OS 重置 user 2")
+                auth_ok = await self._os_ipmitool_reset_user2()
 
         tag = "[OK]" if auth_ok else "[FAIL]"
         logger.info(f"[Recovery] === {tag} {time.monotonic() - t0:.0f}s ===")
@@ -78,6 +91,24 @@ class EnvironmentRecoveryTool:
         if not self.os_host:
             return False
         return await self._os_ssh_exec("echo ok")
+
+    async def _check_bmc_auth(self) -> bool:
+        """单次 BMC 认证检查（不等待，用于纯 BMC 模式和 OS 正常场景）。"""
+        try:
+            async with httpx.AsyncClient(
+                base_url=f"https://{self.bmc_host}:{self.bmc_port}",
+                verify=self.verify_ssl, timeout=10.0, trust_env=False,
+            ) as c:
+                token = await self._redfish_login(c)
+                if token:
+                    await self._redfish_logout(c, token)
+                    logger.info("[Recovery] BMC 认证成功")
+                    return True
+                logger.warning("[Recovery] BMC 认证失败（密码可能被改）")
+                return False
+        except Exception as e:
+            logger.warning(f"[Recovery] BMC 不可达: {e}")
+            return False
 
     async def _redfish_force_power_cycle(self) -> bool:
         """POST Oem/Huawei/ComputerSystem.FruControl + ForcePowerCycle"""
