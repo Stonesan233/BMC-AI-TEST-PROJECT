@@ -35,6 +35,7 @@ from src.core.schemas import ExecutionRecord, StepRecord, StepStatus
 from src.tools.ipmi_tool import IPMITool
 from src.tools.ssh_tool import SSHTool
 from src.tools.ssh_session_manager import SSHSessionManager
+from src.tools.environment_recovery_tool import EnvironmentRecoveryTool
 from src.utils.file_handler import save_execution_record
 from src.rag.retriever import HybridRetriever
 
@@ -526,6 +527,20 @@ class ExecAgent:
             password=self.bmc_password,
         )
 
+        # 环境恢复工具
+        self._recovery_tool = EnvironmentRecoveryTool(
+            bmc_host=self.bmc_host,
+            bmc_port=self.bmc_port,
+            bmc_user=self.bmc_user,
+            bmc_password=self.bmc_password,
+            verify_ssl=self._verify_ssl,
+            os_host=target.get("os_host"),
+            os_user=target.get("os_user"),
+            os_password=target.get("os_password"),
+            ipmi_host=self.ipmi_host,
+            ipmi_port=self.ipmi_port,
+        )
+
         # RAG 混合检索器 (HybridRetriever + QueryRewriter)
         rag_cfg = self._app_config.rag
         self._rag_enabled = rag_cfg.enabled
@@ -688,6 +703,18 @@ class ExecAgent:
         self._save_record(record)
 
         logger.info(f"执行完成: {case_name} -> {record.overall_status}")
+
+        # 环境恢复（用例执行完毕后自动恢复 BMC 环境）
+        try:
+            recovery_result = await self._recovery_tool.recover()
+            if not recovery_result.recovered:
+                logger.warning(
+                    f"[Recovery] 环境恢复未完全成功，下一条用例可能受影响: "
+                    f"{recovery_result.warnings}"
+                )
+        except Exception as e:
+            logger.warning(f"[Recovery] 环境恢复异常: {e}")
+
         return record
 
     async def execute_batch(self, cases: list, config: dict) -> list:
