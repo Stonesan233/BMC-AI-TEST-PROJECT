@@ -72,9 +72,18 @@ class RAGConfig(BaseModel):
     alpha: float = 0.7
     top_k: int = 3
     # -- SSL / 代理 / 超时（内网私有化部署） --
-    verify_ssl: bool = True          # 是否验证 SSL 证书（内网自签名证书设为 False）
-    trust_env: bool = False          # 是否信任系统代理环境变量（内网 407 问题设为 False）
-    timeout: int = 30                # HTTP 超时（秒）
+    verify_ssl: bool = Field(
+        default=True,
+        description="是否验证 SSL 证书（内网自签名证书设为 False）",
+    )
+    trust_env: bool = Field(
+        default=False,
+        description="是否信任系统代理环境变量（内网 407 问题设为 False）",
+    )
+    timeout: int = Field(
+        default=30,
+        description="RAG 模块 HTTP 超时（秒）",
+    )
     # -- 接口类型 --
     default_interface: str = "auto"
     auto_detect: bool = True

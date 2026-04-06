@@ -81,7 +81,7 @@ class HybridRetriever:
                         model=rewrite_model,
                         api_key=rewrite_provider.api_key,
                         base_url=rewrite_provider.base_url,
-                        timeout=rewrite_provider.timeout,
+                        timeout=float(timeout),
                         verify_ssl=verify_ssl,
                         trust_env=trust_env,
                     )
