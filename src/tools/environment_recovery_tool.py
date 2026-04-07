@@ -1,21 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-Environment Recovery Tool - v1.0.1 精简版
+Environment Recovery Tool - v1.0.1
 
-恢复流程（决策树）:
-  纯 BMC 模式（无 os_host）:
-    -> 只做 BMC 认证检查，绝不执行 ForcePowerCycle
-  OS + BMC 模式:
-    OS 可达 -> 跳过 ForcePowerCycle -> 检查 BMC 认证 -> 失败则 ipmitool 重置 user 2
-    OS 不可达 -> ForcePowerCycle 上电 -> 等待主机启动 -> 检查 BMC 认证 -> 失败则重置 user 2
+Recovery flow (decision tree):
+  Pure BMC mode (no os_host):
+    -> Force cleanup users via ipmitool binary -> check BMC auth
+  OS + BMC mode:
+    OS reachable -> skip ForcePowerCycle -> check BMC auth -> fail then ipmitool reset user 2
+    OS unreachable -> ForcePowerCycle -> wait for host boot -> check BMC auth -> fail then reset user 2
 
-注意: ForcePowerCycle 只对主机 Power Cycle，不会重启 BMC，不会使 Redfish Session 失效。
-脚本形式 tool，供 ExecAgent 调用。
+Note: ForcePowerCycle only cycles the host power, does NOT restart BMC,
+does NOT invalidate Redfish sessions.
+
+Script-form tool, called by ExecAgent.
 """
 
 import asyncio
 import base64
 import logging
+import shlex
 import time
 from typing import Any, Dict, List, Optional
 
@@ -33,7 +36,7 @@ class RecoveryResult:
 
 
 class EnvironmentRecoveryTool:
-    """BMC 环境恢复工具（精简版）。"""
+    """BMC environment recovery tool (v1.0.1)."""
 
     def __init__(self, config: Dict[str, Any]):
         self.bmc_host = config["bmc_host"]
@@ -52,33 +55,33 @@ class EnvironmentRecoveryTool:
     async def recover(self) -> RecoveryResult:
         warnings: List[str] = []
         t0 = time.monotonic()
-        logger.info("[Recovery] === 开始 ===")
+        logger.info("[Recovery] === START ===")
 
-        # 强制清理：每次 recover 必执行，确保环境始终干净
+        # Force cleanup: runs on EVERY recover, ensures clean environment
         await self._force_restore_admin_user2()
         await self._delete_users_3_to_17()
 
         if not self.os_host:
-            # ---- 纯 BMC 模式：无 OS 配置，绝不执行 ForcePowerCycle ----
+            # ---- Pure BMC mode: no OS, never execute ForcePowerCycle ----
             logger.info("[Recovery] Pure BMC mode, skip power cycle, only check auth")
             auth_ok = await self._check_bmc_auth()
             if not auth_ok:
-                warnings.append("BMC 认证失败且无 OS 端恢复路径")
+                warnings.append("BMC auth failed and no OS-side recovery path")
 
         else:
             os_ok = await self._check_os_ssh()
             if os_ok:
-                # ---- OS 可达：跳过 ForcePowerCycle ----
+                # ---- OS reachable: skip ForcePowerCycle ----
                 logger.info("[Recovery] OS reachable, skip power cycle")
                 auth_ok = await self._check_bmc_auth()
                 if not auth_ok:
                     auth_ok = await self._os_ipmitool_reset_user2()
             else:
-                # ---- OS 不可达：执行 ForcePowerCycle 上电（对主机） ----
+                # ---- OS unreachable: execute ForcePowerCycle (on host) ----
                 logger.warning("[Recovery] OS unreachable, execute Redfish ForcePowerCycle")
                 power_ok = await self._redfish_force_power_cycle()
                 if power_ok:
-                    logger.info(f"[Recovery] 等待主机启动 ({self.wait_min}s)")
+                    logger.info(f"[Recovery] waiting for host boot ({self.wait_min}s)")
                     await asyncio.sleep(self.wait_min)
 
                 auth_ok = await self._check_bmc_auth()
@@ -89,13 +92,119 @@ class EnvironmentRecoveryTool:
         logger.info(f"[Recovery] === {tag} {time.monotonic() - t0:.0f}s ===")
         return RecoveryResult(recovered=auth_ok, warnings=warnings)
 
+    # ------------------------------------------------------------------
+    # Force cleanup (runs on EVERY recover)
+    # ------------------------------------------------------------------
+
+    async def _force_restore_admin_user2(self) -> bool:
+        """Force restore user 2 as Administrator (runs on every recover)."""
+        cmds = [
+            "user set name 2 Administrator",
+            f"user set password 2 {self.bmc_password}",
+            "user enable 2",
+            "user priv 2 4",
+        ]
+        if self.os_host:
+            ipmi = f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} -P {self.bmc_password}"
+            for cmd in cmds:
+                full_cmd = f"{ipmi} {cmd}"
+                if not await self._os_ssh_exec(full_cmd):
+                    logger.warning(f"[Recovery] user 2 force restore failed via SSH: {cmd}")
+                    return False
+        else:
+            for cmd in cmds:
+                if not await self._ipmi_binary_exec(cmd):
+                    logger.warning(f"[Recovery] user 2 force restore failed via binary: {cmd}")
+                    return False
+        logger.info("[Recovery] user 2 force restored (Administrator, priv=4)")
+        return True
+
+    async def _delete_users_3_to_17(self) -> int:
+        """Delete users 3-17 (runs on every recover), return count cleaned."""
+        cleaned = 0
+        for uid in range(3, 18):
+            if self.os_host:
+                ipmi = f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} -P {self.bmc_password}"
+                cmd = f"{ipmi} user disable {uid} && {ipmi} user set name {uid} ''"
+                ok = await self._os_ssh_exec(cmd)
+            else:
+                ok = await self._ipmi_binary_exec(f"user disable {uid}")
+                if ok:
+                    ok = await self._ipmi_binary_exec(f"user set name {uid} ''")
+            if ok:
+                cleaned += 1
+            else:
+                logger.debug(f"[Recovery] cleanup uid={uid} failed (may not exist)")
+        logger.info(f"[Recovery] user cleanup done, cleaned {cleaned}/15 users")
+        return cleaned
+
+    # ------------------------------------------------------------------
+    # Execution backends: SSH (OS side) vs local binary (pure BMC)
+    # ------------------------------------------------------------------
+
+    async def _ipmi_binary_exec(self, ipmi_subcmd: str) -> bool:
+        """Run ipmitool binary locally (fallback when no OS SSH available)."""
+        try:
+            cmd_parts = shlex.split(ipmi_subcmd)
+        except ValueError:
+            return False
+        if not cmd_parts:
+            return False
+        args = [
+            "/usr/bin/ipmitool",
+            "-I", "lanplus",
+            "-H", self.ipmi_host,
+            "-U", self.bmc_user,
+            "-P", self.bmc_password,
+            "-p", str(self.ipmi_port),
+        ] + cmd_parts
+        logger.debug(
+            "[Recovery] binary exec: /usr/bin/ipmitool -I lanplus "
+            "-H %s -U %s -P *** -p %s %s",
+            self.ipmi_host, self.bmc_user, self.ipmi_port, ipmi_subcmd,
+        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except FileNotFoundError:
+            logger.warning("[Recovery] ipmitool binary not found at /usr/bin/ipmitool")
+            return False
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            logger.warning(f"[Recovery] ipmitool binary timeout: {ipmi_subcmd}")
+            return False
+        except Exception as e:
+            logger.debug(f"[Recovery] ipmitool binary exec error: {e}")
+            return False
+
+        if proc.returncode != 0:
+            stderr_text = stderr.decode("utf-8", errors="replace").strip()
+            logger.debug(
+                "[Recovery] ipmitool binary rc=%d stderr=%s",
+                proc.returncode, stderr_text,
+            )
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    # OS SSH checks
+    # ------------------------------------------------------------------
+
     async def _check_os_ssh(self) -> bool:
         if not self.os_host:
             return False
         return await self._os_ssh_exec("echo ok")
 
     async def _check_bmc_auth(self) -> bool:
-        """单次 BMC 认证检查（不等待，用于纯 BMC 模式和 OS 正常场景）。"""
+        """Single BMC auth check (no waiting)."""
         try:
             async with httpx.AsyncClient(
                 base_url=f"https://{self.bmc_host}:{self.bmc_port}",
@@ -104,13 +213,17 @@ class EnvironmentRecoveryTool:
                 token = await self._redfish_login(c)
                 if token:
                     await self._redfish_logout(c, token)
-                    logger.info("[Recovery] BMC 认证成功")
+                    logger.info("[Recovery] BMC auth OK")
                     return True
-                logger.warning("[Recovery] BMC 认证失败（密码可能被改）")
+                logger.warning("[Recovery] BMC auth failed (password may have been changed)")
                 return False
         except Exception as e:
-            logger.warning(f"[Recovery] BMC 不可达: {e}")
+            logger.warning(f"[Recovery] BMC unreachable: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Redfish operations
+    # ------------------------------------------------------------------
 
     async def _redfish_force_power_cycle(self) -> bool:
         """POST Oem/Huawei/ComputerSystem.FruControl + ForcePowerCycle"""
@@ -134,11 +247,11 @@ class EnvironmentRecoveryTool:
                             f"(HTTP {resp.status_code})")
                 return ok
         except Exception as e:
-            logger.warning(f"[Recovery] ForcePowerCycle 异常: {e}")
+            logger.warning(f"[Recovery] ForcePowerCycle error: {e}")
             return False
 
     async def _wait_and_check_bmc_auth(self) -> bool:
-        logger.info(f"[Recovery] Step 3: 等待 BMC 就绪 (最久 {self.wait_max}s)")
+        logger.info(f"[Recovery] Step 3: wait for BMC ready (max {self.wait_max}s)")
         await asyncio.sleep(self.wait_min)
         deadline = time.monotonic() + (self.wait_max - self.wait_min)
         while time.monotonic() < deadline:
@@ -150,20 +263,24 @@ class EnvironmentRecoveryTool:
                     token = await self._redfish_login(c)
                     if token:
                         await self._redfish_logout(c, token)
-                        logger.info("[Recovery] BMC 认证成功")
+                        logger.info("[Recovery] BMC auth OK")
                         return True
-                    return False  # 可达但认证失败 -> Step 4
+                    return False  # reachable but auth failed -> Step 4
             except (httpx.ConnectError, httpx.TimeoutException):
                 await asyncio.sleep(30)
             except Exception:
                 await asyncio.sleep(30)
-        logger.warning(f"[Recovery] BMC 在 {self.wait_max}s 内未就绪")
+        logger.warning(f"[Recovery] BMC not ready within {self.wait_max}s")
         return False
+
+    # ------------------------------------------------------------------
+    # OS-side ipmitool reset (fallback in decision tree)
+    # ------------------------------------------------------------------
 
     async def _os_ipmitool_reset_user2(self) -> bool:
         if not self.os_host:
             return False
-        ipmi = f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} -P {self.bmc_password}"
+        ipmi = f"ipmitool -H {self.ipmi_host} -P {self.bmc_password}"
         cmds = [
             f"{ipmi} user set name 2 {self.bmc_user}",
             f"{ipmi} user set password 2 {self.bmc_password}",
@@ -172,45 +289,14 @@ class EnvironmentRecoveryTool:
         ]
         for cmd in cmds:
             if not await self._os_ssh_exec(cmd):
-                logger.warning(f"[Recovery] 重置失败: {cmd[:80]}")
+                logger.warning(f"[Recovery] reset failed: {cmd[:80]}")
                 return False
-        logger.info("[Recovery] user 2 重置成功")
+        logger.info("[Recovery] user 2 reset OK")
         return True
 
-    async def _force_restore_admin_user2(self) -> bool:
-        """强制将 user 2 重置为 Administrator（每次 recover 必执行）"""
-        if not self.os_host:
-            logger.debug("[Recovery] 无 OS 端点，跳过 user 2 强制恢复")
-            return False
-        ipmi = f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} -P {self.bmc_password}"
-        cmds = [
-            f"{ipmi} user set name 2 Administrator",
-            f"{ipmi} user set password 2 {self.bmc_password}",
-            f"{ipmi} user enable 2",
-            f"{ipmi} user priv 2 4",
-        ]
-        for cmd in cmds:
-            if not await self._os_ssh_exec(cmd):
-                logger.warning(f"[Recovery] user 2 强制恢复失败: {cmd[:80]}")
-                return False
-        logger.info("[Recovery] user 2 强制恢复成功 (Administrator, priv=4)")
-        return True
-
-    async def _delete_users_3_to_17(self) -> int:
-        """删除 3~17 号用户（每次 recover 必执行），返回成功清理数"""
-        if not self.os_host:
-            logger.debug("[Recovery] 无 OS 端点，跳过用户清理")
-            return 0
-        ipmi = f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} -P {self.bmc_password}"
-        cleaned = 0
-        for uid in range(3, 18):
-            cmd = f"{ipmi} user disable {uid} && {ipmi} user set name {uid} ''"
-            if await self._os_ssh_exec(cmd):
-                cleaned += 1
-            else:
-                logger.debug(f"[Recovery] 清理 uid={uid} 失败（可能不存在）")
-        logger.info(f"[Recovery] 用户清理完成，清理 {cleaned}/15 个用户")
-        return cleaned
+    # ------------------------------------------------------------------
+    # SSH / Redfish helpers
+    # ------------------------------------------------------------------
 
     async def _os_ssh_exec(self, cmd: str, capture: bool = False) -> Any:
         if not self.os_host:
@@ -225,7 +311,7 @@ class EnvironmentRecoveryTool:
                 return res.raw_stdout if res.success else ""
             return res.success
         except Exception as e:
-            logger.debug(f"[Recovery] SSH exec 异常: {e}")
+            logger.debug(f"[Recovery] SSH exec error: {e}")
             return "" if capture else False
 
     async def _redfish_login(self, client: httpx.AsyncClient) -> Optional[str]:
