@@ -145,6 +145,8 @@ class IPMITool:
             IPMIResult 结构化结果
         """
         started_at = datetime.now()
+        backend = "binary" if self.use_binary else "pyghmi"
+        _logger.info("[IPMI] backend=%s | cmd=%s | timeout=%s", backend, command, timeout)
 
         try:
             if self.use_binary:

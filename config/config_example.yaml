@@ -162,6 +162,12 @@ target:
   bmc_user: "Administrator"               # BMC 登录用户名
   bmc_password: "your_password"           # BMC 登录密码
   verify_ssl: false                       # BMC 自签名证书环境建议设为 false
+
+  # -- IPMI 后端选择 --
+  ipmi:
+    use_binary: true                      # true: 调用 ipmitool 二进制（真实 BMC，支持写操作）
+                                         # false: 使用 pyghmi 库（QEMU 测试 fallback）
+    binary_path: "/usr/bin/ipmitool"      # ipmitool 二进制路径（use_binary=true 时生效）
   # os_host: "192.168.1.101"              # 可选: 主机控制台地址
   # os_user: "root"                       # 可选: 主机控制台用户
   # os_password: "your_password"          # 可选: 主机控制台密码

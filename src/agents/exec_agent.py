@@ -510,13 +510,15 @@ class ExecAgent:
         # 默认 False: BMC 设备通常使用自签名证书，内网环境需跳过 SSL 验证
         self._verify_ssl = target.get("verify_ssl", False)
 
-        # IPMI Tool 实例（pyghmi 后端）
+        # IPMI Tool 实例（支持 binary / pyghmi 双后端）
+        ipmi_config = target.get("ipmi", {})
         self._ipmi_tool = IPMITool(
             host=self.ipmi_host,
             port=self.ipmi_port,
             user=self.bmc_user,
             password=self.bmc_password,
             cipher_suite=17,
+            config=ipmi_config,
         )
 
         # SSH 会话管理器
@@ -1039,7 +1041,8 @@ class ExecAgent:
                 ensure_ascii=False,
             )
 
-        logger.info(f"[IPMI] cmd: {command} | host={self.ipmi_host}:{self.ipmi_port} | cipher=17")
+        backend = "binary" if self._ipmi_tool.use_binary else "pyghmi"
+        logger.info(f"[IPMI] cmd: {command} | host={self.ipmi_host}:{self.ipmi_port} | backend={backend}")
 
         try:
             result = await self._ipmi_tool.execute(command, timeout=timeout)
