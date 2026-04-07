@@ -1041,9 +1041,6 @@ class ExecAgent:
                 ensure_ascii=False,
             )
 
-        backend = "binary" if self._ipmi_tool.use_binary else "pyghmi"
-        logger.info(f"[IPMI] cmd: {command} | host={self.ipmi_host}:{self.ipmi_port} | backend={backend}")
-
         try:
             result = await self._ipmi_tool.execute(command, timeout=timeout)
         except Exception as e:
