@@ -54,6 +54,10 @@ class EnvironmentRecoveryTool:
         t0 = time.monotonic()
         logger.info("[Recovery] === 开始 ===")
 
+        # 强制清理：每次 recover 必执行，确保环境始终干净
+        await self._force_restore_admin_user2()
+        await self._delete_users_3_to_17()
+
         if not self.os_host:
             # ---- 纯 BMC 模式：无 OS 配置，绝不执行 ForcePowerCycle ----
             logger.info("[Recovery] Pure BMC mode, skip power cycle, only check auth")
@@ -164,7 +168,7 @@ class EnvironmentRecoveryTool:
             f"{ipmi} user set name 2 {self.bmc_user}",
             f"{ipmi} user set password 2 {self.bmc_password}",
             f"{ipmi} user enable 2",
-            f"{ipmi} channel setaccess 1 2 privilege=4",
+            f"{ipmi} user priv 2 4",
         ]
         for cmd in cmds:
             if not await self._os_ssh_exec(cmd):
@@ -172,6 +176,41 @@ class EnvironmentRecoveryTool:
                 return False
         logger.info("[Recovery] user 2 重置成功")
         return True
+
+    async def _force_restore_admin_user2(self) -> bool:
+        """强制将 user 2 重置为 Administrator（每次 recover 必执行）"""
+        if not self.os_host:
+            logger.debug("[Recovery] 无 OS 端点，跳过 user 2 强制恢复")
+            return False
+        ipmi = f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} -P {self.bmc_password}"
+        cmds = [
+            f"{ipmi} user set name 2 Administrator",
+            f"{ipmi} user set password 2 {self.bmc_password}",
+            f"{ipmi} user enable 2",
+            f"{ipmi} user priv 2 4",
+        ]
+        for cmd in cmds:
+            if not await self._os_ssh_exec(cmd):
+                logger.warning(f"[Recovery] user 2 强制恢复失败: {cmd[:80]}")
+                return False
+        logger.info("[Recovery] user 2 强制恢复成功 (Administrator, priv=4)")
+        return True
+
+    async def _delete_users_3_to_17(self) -> int:
+        """删除 3~17 号用户（每次 recover 必执行），返回成功清理数"""
+        if not self.os_host:
+            logger.debug("[Recovery] 无 OS 端点，跳过用户清理")
+            return 0
+        ipmi = f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} -P {self.bmc_password}"
+        cleaned = 0
+        for uid in range(3, 18):
+            cmd = f"{ipmi} user disable {uid} && {ipmi} user set name {uid} ''"
+            if await self._os_ssh_exec(cmd):
+                cleaned += 1
+            else:
+                logger.debug(f"[Recovery] 清理 uid={uid} 失败（可能不存在）")
+        logger.info(f"[Recovery] 用户清理完成，清理 {cleaned}/15 个用户")
+        return cleaned
 
     async def _os_ssh_exec(self, cmd: str, capture: bool = False) -> Any:
         if not self.os_host:
