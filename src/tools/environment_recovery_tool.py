@@ -97,7 +97,11 @@ class EnvironmentRecoveryTool:
     # ------------------------------------------------------------------
 
     async def _force_restore_admin_user2(self) -> bool:
-        """Force restore user 2 as Administrator (runs on every recover)."""
+        """Force restore user 2 as Administrator (runs on every recover).
+
+        OS mode: in-band via SSH (ipmitool on host, NO -H/-U/-P, no auth needed).
+        Pure BMC mode: out-of-band via local ipmitool binary (-H/-U/-P required).
+        """
         cmds = [
             "user set name 2 Administrator",
             f"user set password 2 {self.bmc_password}",
@@ -105,29 +109,35 @@ class EnvironmentRecoveryTool:
             "user priv 2 4",
         ]
         if self.os_host:
-            ipmi = f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} -P {self.bmc_password}"
+            # In-band: OS host has local ipmitool, talks to BMC via /dev/ipmi0
             for cmd in cmds:
-                full_cmd = f"{ipmi} {cmd}"
-                if not await self._os_ssh_exec(full_cmd):
-                    logger.warning(f"[Recovery] user 2 force restore failed via SSH: {cmd}")
+                if not await self._os_ssh_exec(f"ipmitool {cmd}"):
+                    logger.warning(f"[Recovery] user 2 in-band restore failed: {cmd}")
                     return False
         else:
+            # Out-of-band: test server -> BMC via lanplus, needs credentials
             for cmd in cmds:
                 if not await self._ipmi_binary_exec(cmd):
-                    logger.warning(f"[Recovery] user 2 force restore failed via binary: {cmd}")
+                    logger.warning(f"[Recovery] user 2 out-of-band restore failed: {cmd}")
                     return False
         logger.info("[Recovery] user 2 force restored (Administrator, priv=4)")
         return True
 
     async def _delete_users_3_to_17(self) -> int:
-        """Delete users 3-17 (runs on every recover), return count cleaned."""
+        """Delete users 3-17 (runs on every recover), return count cleaned.
+
+        OS mode: in-band via SSH (no auth needed).
+        Pure BMC mode: out-of-band via local ipmitool binary.
+        """
         cleaned = 0
         for uid in range(3, 18):
             if self.os_host:
-                ipmi = f"ipmitool -H {self.ipmi_host} -U {self.bmc_user} -P {self.bmc_password}"
-                cmd = f"{ipmi} user disable {uid} && {ipmi} user set name {uid} ''"
-                ok = await self._os_ssh_exec(cmd)
+                # In-band: single compound command via SSH
+                ok = await self._os_ssh_exec(
+                    f"ipmitool user disable {uid} && ipmitool user set name {uid} ''"
+                )
             else:
+                # Out-of-band: two separate calls
                 ok = await self._ipmi_binary_exec(f"user disable {uid}")
                 if ok:
                     ok = await self._ipmi_binary_exec(f"user set name {uid} ''")
@@ -278,20 +288,20 @@ class EnvironmentRecoveryTool:
     # ------------------------------------------------------------------
 
     async def _os_ipmitool_reset_user2(self) -> bool:
+        """Reset user 2 via OS SSH (in-band, no BMC auth needed)."""
         if not self.os_host:
             return False
-        ipmi = f"ipmitool -H {self.ipmi_host} -P {self.bmc_password}"
         cmds = [
-            f"{ipmi} user set name 2 {self.bmc_user}",
-            f"{ipmi} user set password 2 {self.bmc_password}",
-            f"{ipmi} user enable 2",
-            f"{ipmi} user priv 2 4",
+            f"ipmitool user set name 2 {self.bmc_user}",
+            f"ipmitool user set password 2 {self.bmc_password}",
+            "ipmitool user enable 2",
+            "ipmitool user priv 2 4",
         ]
         for cmd in cmds:
             if not await self._os_ssh_exec(cmd):
-                logger.warning(f"[Recovery] reset failed: {cmd[:80]}")
+                logger.warning(f"[Recovery] in-band reset failed: {cmd}")
                 return False
-        logger.info("[Recovery] user 2 reset OK")
+        logger.info("[Recovery] user 2 in-band reset OK")
         return True
 
     # ------------------------------------------------------------------
