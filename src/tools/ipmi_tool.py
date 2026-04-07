@@ -2,12 +2,15 @@
 """
 openUBMC AI 测试框架 - IPMI Tool
 
-使用 pyghmi 作为后端，对外提供 ipmitool 风格的命令接口。
+支持两种后端：
+1. ipmitool 二进制（默认，推荐用于真实 BMC 环境）
+2. pyghmi 库（fallback，仅用于 QEMU 测试环境）
 
 设计:
-- 内部统一使用 pyghmi raw_command（兼容所有 pyghmi 版本）
-- 对外保持 ipmitool 风格的命令接口（mc info, user list, chassis power status 等）
-- 支持 cipher_suite=17（华为 openUBMC 必须）
+- 默认通过 ipmitool 二进制执行命令，支持完整的用户管理写操作
+  (user list / set name / set password / enable / disable / priv)
+- pyghmi 作为 fallback 后端，仅支持只读和基础操作
+- 对外保持 ipmitool 风格的命令接口
 - 返回结构化结果 + Evidence 数据
 """
 
@@ -15,6 +18,8 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
+import logging
+import shlex
 from typing import Any, Callable, Dict, List, Optional
 
 try:
@@ -23,6 +28,8 @@ try:
     HAS_PYGHMI = True
 except ImportError:
     HAS_PYGHMI = False
+
+_logger = logging.getLogger("ipmi_tool")
 
 
 # ======================================================================
@@ -54,8 +61,9 @@ class IPMITool:
     """
     BMC IPMI 命令工具
 
-    使用 pyghmi raw_command 作为后端，对外提供 ipmitool 风格的命令接口。
-    支持 cipher_suite=17（华为 openUBMC 环境必须）。
+    支持两种后端（通过 config.use_binary 切换）：
+    - use_binary=True (默认): 调用 ipmitool 二进制，支持完整用户管理写操作
+    - use_binary=False: 使用 pyghmi raw_command（仅用于 QEMU 测试）
     """
 
     def __init__(
@@ -65,10 +73,15 @@ class IPMITool:
         user: str = "Administrator",
         password: str = "",
         cipher_suite: int = 17,
+        config: Optional[Dict[str, Any]] = None,
     ):
-        if not HAS_PYGHMI:
+        config = config or {}
+        self.use_binary = config.get("use_binary", True)
+        self.binary_path = config.get("binary_path", "/usr/bin/ipmitool")
+
+        if not self.use_binary and not HAS_PYGHMI:
             raise RuntimeError(
-                "pyghmi 未安装，请执行: pip install pyghmi"
+                "pyghmi 未安装且 use_binary=False，请执行: pip install pyghmi"
             )
 
         self.host = host
@@ -77,6 +90,14 @@ class IPMITool:
         self.password = password
         self.cipher_suite = cipher_suite
         self._conn = None
+
+        _logger.info(
+            "[IPMITool] backend=%s | binary_path=%s | host=%s:%s",
+            "binary" if self.use_binary else "pyghmi",
+            self.binary_path,
+            host,
+            port,
+        )
 
     # ------------------------------------------------------------------
     # 连接管理
@@ -111,8 +132,13 @@ class IPMITool:
         """
         执行 ipmitool 风格的命令（异步）。
 
+        根据 use_binary 配置自动选择后端：
+        - True  --> ipmitool 二进制（支持完整用户管理写操作）
+        - False --> pyghmi 库（fallback，QEMU 测试用）
+
         Args:
-            command: ipmitool 子命令，如 "mc info", "chassis power status"
+            command: ipmitool 子命令，如 "mc info", "chassis power status",
+                     "user set password 3 newpass"
             timeout: 超时秒数
 
         Returns:
@@ -121,10 +147,13 @@ class IPMITool:
         started_at = datetime.now()
 
         try:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(self._execute_sync, command),
-                timeout=timeout,
-            )
+            if self.use_binary:
+                result = await self._execute_binary(command, timeout)
+            else:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(self._execute_sync, command),
+                    timeout=timeout,
+                )
         except asyncio.TimeoutError:
             completed_at = datetime.now()
             return IPMIResult(
@@ -149,6 +178,126 @@ class IPMITool:
         result.started_at = started_at
         result.completed_at = datetime.now()
         return result
+
+    # ------------------------------------------------------------------
+    # ipmitool 二进制后端（真实 BMC 环境）
+    # ------------------------------------------------------------------
+
+    async def _execute_binary(self, command: str, timeout: int) -> IPMIResult:
+        """
+        通过 ipmitool 二进制执行命令（真实 BMC 环境推荐）。
+
+        支持所有 ipmitool 原生命令，包括用户管理写操作：
+        user list / user set name / user set password / user enable /
+        user disable / user priv 等。
+
+        命令格式: {binary_path} -I lanplus -H {host} -U {user} -P {pass} -p {port} {cmd}
+        """
+        cmd = command.strip()
+        # 兼容业界习惯：自动去除 ipmitool / ipmi 前缀
+        if cmd.lower().startswith("ipmitool "):
+            cmd = cmd[len("ipmitool "):].strip()
+        elif cmd.lower().startswith("ipmi "):
+            cmd = cmd[len("ipmi "):].strip()
+
+        # 使用 shlex 解析，支持引号包裹的参数（如含空格的密码）
+        try:
+            cmd_parts = shlex.split(cmd)
+        except ValueError as exc:
+            return IPMIResult(
+                success=False,
+                command=command,
+                exit_code=1,
+                error=f"命令解析失败: {exc}",
+            )
+
+        if not cmd_parts:
+            return IPMIResult(
+                success=False,
+                command=command,
+                exit_code=1,
+                error="空命令",
+            )
+
+        args = [
+            self.binary_path,
+            "-I", "lanplus",
+            "-H", self.host,
+            "-U", self.user,
+            "-P", self.password,
+            "-p", str(self.port),
+        ] + cmd_parts
+
+        # 日志脱敏：不记录密码
+        safe_cmd = (
+            f"{self.binary_path} -I lanplus -H {self.host} "
+            f"-U {self.user} -P *** -p {self.port} {cmd}"
+        )
+        _logger.info("[IPMI-Binary] executing: %s", safe_cmd)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            # 超时则终止子进程，然后向上抛出让 execute() 统一处理
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+            raise
+        except FileNotFoundError:
+            return IPMIResult(
+                success=False,
+                command=command,
+                exit_code=127,
+                error=f"ipmitool 二进制未找到: {self.binary_path}",
+            )
+        except PermissionError:
+            return IPMIResult(
+                success=False,
+                command=command,
+                exit_code=126,
+                error=f"ipmitool 无执行权限: {self.binary_path}",
+            )
+
+        stdout_text = stdout.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+
+        if proc.returncode != 0:
+            _logger.error(
+                "[IPMI-Binary] FAILED: %s | rc=%s | stderr=%s",
+                safe_cmd,
+                proc.returncode,
+                stderr_text,
+            )
+            return IPMIResult(
+                success=False,
+                command=command,
+                exit_code=proc.returncode,
+                raw_output=stdout_text,
+                error=stderr_text or f"ipmitool 返回码: {proc.returncode}",
+            )
+
+        _logger.info("[IPMI-Binary] OK: %s", safe_cmd)
+
+        return IPMIResult(
+            success=True,
+            command=command,
+            exit_code=0,
+            raw_output=stdout_text,
+            evidence=self._build_evidence(command, stdout_text),
+        )
+
+    # ------------------------------------------------------------------
+    # pyghmi 后端（QEMU 测试 fallback）
+    # ------------------------------------------------------------------
 
     def _execute_sync(self, command_str: str) -> IPMIResult:
         """同步执行 IPMI 命令（在工作线程中运行）"""
