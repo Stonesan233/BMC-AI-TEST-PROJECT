@@ -219,6 +219,10 @@ TOOL_DEFINITIONS = [
                         "type": "object",
                         "description": "请求体（POST/PATCH 时使用，可选）",
                     },
+                    "headers": {
+                        "type": "object",
+                        "description": "自定义 HTTP Headers，如 {\"If-Match\": \"etag_value\"}，用于条件更新",
+                    },
                 },
                 "required": ["endpoint", "method"],
             },
@@ -967,6 +971,7 @@ class ExecAgent:
         endpoint = args.get("endpoint", "/redfish/v1")
         method = args.get("method", "GET").upper()
         body = args.get("body")
+        custom_headers = args.get("headers")
 
         client = await self._get_http_client()
 
@@ -980,6 +985,10 @@ class ExecAgent:
             "Content-Type": "application/json",
             "Authorization": auth_header,
         }
+        # 透传自定义 Headers（如 If-Match, If-None-Match 等）
+        if custom_headers and isinstance(custom_headers, dict):
+            headers.update(custom_headers)
+            logger.debug(f"[Redfish] custom headers merged: {list(custom_headers.keys())}")
 
         try:
             if method == "GET":
