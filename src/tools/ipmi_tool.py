@@ -128,7 +128,13 @@ class IPMITool:
     # 公开接口
     # ------------------------------------------------------------------
 
-    async def execute(self, command: str, timeout: int = 30) -> IPMIResult:
+    async def execute(
+        self,
+        command: str,
+        timeout: int = 30,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> IPMIResult:
         """
         执行 ipmitool 风格的命令（异步）。
 
@@ -140,20 +146,30 @@ class IPMITool:
             command: ipmitool 子命令，如 "mc info", "chassis power status",
                      "user set password 3 newpass"
             timeout: 超时秒数
+            user: 可选，覆盖默认用户名（如用非 Administrator 身份执行）
+            password: 可选，覆盖默认密码（需与 user 配对传入）
 
         Returns:
             IPMIResult 结构化结果
         """
         started_at = datetime.now()
+        effective_user = user or self.user
         backend = "binary" if self.use_binary else "pyghmi"
-        _logger.info("[IPMI] backend=%s | cmd=%s | timeout=%s", backend, command, timeout)
+        _logger.info(
+            "[IPMI] backend=%s | user=%s | cmd=%s | timeout=%s",
+            backend, effective_user, command, timeout,
+        )
 
         try:
             if self.use_binary:
-                result = await self._execute_binary(command, timeout)
+                result = await self._execute_binary(
+                    command, timeout, user=user, password=password,
+                )
             else:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(self._execute_sync, command),
+                    asyncio.to_thread(
+                        self._execute_sync, command, user=user, password=password,
+                    ),
                     timeout=timeout,
                 )
         except asyncio.TimeoutError:
@@ -185,7 +201,13 @@ class IPMITool:
     # ipmitool 二进制后端（真实 BMC 环境）
     # ------------------------------------------------------------------
 
-    async def _execute_binary(self, command: str, timeout: int) -> IPMIResult:
+    async def _execute_binary(
+        self,
+        command: str,
+        timeout: int,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> IPMIResult:
         """
         通过 ipmitool 二进制执行命令（真实 BMC 环境推荐）。
 
@@ -195,6 +217,8 @@ class IPMITool:
 
         命令格式: {binary_path} -I lanplus -H {host} -U {user} -P {pass} -p {port} {cmd}
         """
+        effective_user = user or self.user
+        effective_password = password or self.password
         cmd = command.strip()
         # 兼容业界习惯：自动去除 ipmitool / ipmi 前缀
         if cmd.lower().startswith("ipmitool "):
@@ -225,15 +249,15 @@ class IPMITool:
             self.binary_path,
             "-I", "lanplus",
             "-H", self.host,
-            "-U", self.user,
-            "-P", self.password,
+            "-U", effective_user,
+            "-P", effective_password,
             "-p", str(self.port),
         ] + cmd_parts
 
         # 日志脱敏：不记录密码
         safe_cmd = (
             f"{self.binary_path} -I lanplus -H {self.host} "
-            f"-U {self.user} -P *** -p {self.port} {cmd}"
+            f"-U {effective_user} -P *** -p {self.port} {cmd}"
         )
         _logger.info("[IPMI-Binary] executing: %s", safe_cmd)
 
@@ -301,9 +325,24 @@ class IPMITool:
     # pyghmi 后端（QEMU 测试 fallback）
     # ------------------------------------------------------------------
 
-    def _execute_sync(self, command_str: str) -> IPMIResult:
+    def _execute_sync(
+        self,
+        command_str: str,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> IPMIResult:
         """同步执行 IPMI 命令（在工作线程中运行）"""
-        conn = self._connect()
+        # 如果传入了覆盖凭据，创建临时连接；否则复用默认连接
+        if user and password:
+            conn = ipmi_command.Command(
+                bmc=self.host,
+                userid=user,
+                password=password,
+                port=self.port,
+                cipher=self.cipher_suite,
+            )
+        else:
+            conn = self._connect()
         cmd = command_str.strip()
         # 兼容业界习惯：自动去除 ipmitool / ipmi 前缀
         # LLM 经常生成 "ipmi chassis status" 或 "ipmitool mc info"

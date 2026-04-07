@@ -264,6 +264,14 @@ TOOL_DEFINITIONS = [
                         "description": "超时时间（秒），默认 30",
                         "default": 30,
                     },
+                    "user": {
+                        "type": "string",
+                        "description": "可选，覆盖默认 BMC 用户名（禁用 Administrator 后可用其他用户执行）",
+                    },
+                    "password": {
+                        "type": "string",
+                        "description": "可选，覆盖默认 BMC 密码（需与 user 配对传入）",
+                    },
                 },
                 "required": ["command"],
             },
@@ -1043,6 +1051,8 @@ class ExecAgent:
         """
         command = args.get("command", "")
         timeout = args.get("timeout", 30)
+        ipmi_user = args.get("user")
+        ipmi_password = args.get("password")
 
         if not command.strip():
             return json.dumps(
@@ -1051,7 +1061,12 @@ class ExecAgent:
             )
 
         try:
-            result = await self._ipmi_tool.execute(command, timeout=timeout)
+            result = await self._ipmi_tool.execute(
+                command,
+                timeout=timeout,
+                user=ipmi_user,
+                password=ipmi_password,
+            )
         except Exception as e:
             return json.dumps(
                 {"error": f"IPMI 执行异常: {e}"},
