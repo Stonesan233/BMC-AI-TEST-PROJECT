@@ -155,6 +155,14 @@ class IPMITool:
         started_at = datetime.now()
         effective_user = user or self.user
         backend = "binary" if self.use_binary else "pyghmi"
+
+        # 动态凭据日志：当传入的 user 与默认不同时显式标记
+        if user and user != self.user:
+            _logger.info(
+                "[IPMI] using dynamic credentials for user=%s (default=%s)",
+                user, self.user,
+            )
+
         _logger.info(
             "[IPMI] backend=%s | user=%s | cmd=%s | timeout=%s",
             backend, effective_user, command, timeout,

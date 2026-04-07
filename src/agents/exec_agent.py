@@ -1044,10 +1044,12 @@ class ExecAgent:
 
     async def _tool_ipmi_command(self, args: dict) -> str:
         """
-        真实 IPMI 命令（pyghmi 后端）。
+        真实 IPMI 命令（支持动态用户凭据 + 认证失败自动恢复）。
 
-        通过 IPMITool (pyghmi) 发送 IPMI 命令。
-        支持 cipher_suite=17（openUBMC 必须）。
+        通过 IPMITool 发送 IPMI 命令。
+        - 支持 user/password 参数覆盖默认凭据
+        - 认证失败时自动尝试备用凭据重试
+        - 认证失败时触发 recovery_tool.recover() 恢复环境
         """
         command = args.get("command", "")
         timeout = args.get("timeout", 30)
@@ -1060,6 +1062,7 @@ class ExecAgent:
                 ensure_ascii=False,
             )
 
+        # ---- 第一次尝试：使用请求的凭据 ----
         try:
             result = await self._ipmi_tool.execute(
                 command,
@@ -1073,6 +1076,37 @@ class ExecAgent:
                 ensure_ascii=False,
             )
 
+        # ---- 认证失败自动恢复 + 备用凭据重试 ----
+        if not result.success and self._is_ipmi_auth_failure(result):
+            logger.warning(
+                "[IPMI] auth failure detected, triggering recovery + retry"
+            )
+            # 1. 触发环境恢复（确保 user 2 恢复为 Administrator）
+            try:
+                await self._recovery_tool.recover()
+            except Exception as recovery_err:
+                logger.warning(f"[IPMI] recovery failed: {recovery_err}")
+
+            # 2. 用默认凭据重试一次
+            retry_user = self.bmc_user
+            retry_password = self.bmc_password
+            if ipmi_user != retry_user:
+                logger.info(
+                    f"[IPMI] retrying with default credentials: {retry_user}"
+                )
+                try:
+                    result = await self._ipmi_tool.execute(
+                        command,
+                        timeout=timeout,
+                        user=retry_user,
+                        password=retry_password,
+                    )
+                except Exception as e:
+                    return json.dumps(
+                        {"error": f"IPMI 重试异常: {e}"},
+                        ensure_ascii=False,
+                    )
+
         if not result.success:
             return json.dumps(
                 {
@@ -1085,6 +1119,21 @@ class ExecAgent:
             )
 
         return IPMITool.to_json(result)
+
+    @staticmethod
+    def _is_ipmi_auth_failure(result) -> bool:
+        """检查 IPMI 结果是否为认证/会话建立失败"""
+        auth_keywords = [
+            "Unable to establish IPMI v2 / RMCP+ session",
+            "Connection refused",
+            "Unauthorized",
+            "Authentication failed",
+            "invalid user name",
+            "set session privilege",
+            "timeout",  # pyghmi 超时通常也是认证问题
+        ]
+        error_text = (result.error or "").lower()
+        return any(kw.lower() in error_text for kw in auth_keywords)
 
     async def _tool_ssh_exec(self, args: dict) -> str:
         """
