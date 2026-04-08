@@ -256,6 +256,7 @@ class IPMITool:
         args = [
             self.binary_path,
             "-I", "lanplus",
+            "-C", str(self.cipher_suite or 17),
             "-H", self.host,
             "-U", effective_user,
             "-P", effective_password,
@@ -264,8 +265,8 @@ class IPMITool:
 
         # 日志脱敏：不记录密码
         safe_cmd = (
-            f"{self.binary_path} -I lanplus -H {self.host} "
-            f"-U {effective_user} -P *** -p {self.port} {cmd}"
+            f"{self.binary_path} -I lanplus -C {self.cipher_suite or 17} "
+            f"-H {self.host} -U {effective_user} -P *** -p {self.port} {cmd}"
         )
         _logger.info("[IPMI-Binary] executing: %s", safe_cmd)
 
