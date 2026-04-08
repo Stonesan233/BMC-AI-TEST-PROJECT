@@ -2103,6 +2103,48 @@ class ExecAgent:
         step.setdefault("tool", "unknown")
         step.setdefault("expected", "")
 
+        # IPMI 步骤强制修复：命令失败时 LLM 可能遗漏 tool/interface_preference
+        self._fix_ipmi_step_fields(step)
+
+    def _fix_ipmi_step_fields(self, step: dict) -> None:
+        """
+        强制修复 IPMI 步骤的 tool / interface_preference / actual 字段。
+
+        当 ipmi_command 执行失败时，LLM 生成的 ExecutionRecord 中
+        step.tool 和 step.interface_preference 经常为空或 "N/A"，
+        导致 Markdown 报告中工具/接口显示 N/A，影响故障定位。
+
+        检测条件（满足任一即视为 IPMI 步骤）：
+        - command 字段包含 "ipmitool" 或 "ipmi" 关键字
+        - tool 字段已标注为 "ipmi" 或 "ipmi_command"
+        - description 包含 IPMI 相关描述
+        """
+        command = str(step.get("command") or "").lower()
+        tool = str(step.get("tool") or "").lower()
+        description = str(step.get("description") or "").lower()
+        raw_stdout = str(step.get("raw_stdout") or "")
+        raw_stderr = str(step.get("raw_stderr") or "")
+        error_message = str(step.get("error_message") or "")
+
+        is_ipmi = (
+            "ipmitool" in command
+            or "ipmi" in command
+            or tool in ("ipmi", "ipmi_command")
+            or "ipmi" in description
+        )
+
+        if not is_ipmi:
+            return
+
+        # 强制设置 tool 和 interface_preference
+        step["tool"] = "ipmi_command"
+        step["interface_preference"] = "ipmi"
+
+        # 确保 actual 有值（优先 raw_stdout -> error_message -> raw_stderr）
+        actual = step.get("actual")
+        if not actual or str(actual).strip().upper() in ("N/A", "", "NONE", "NULL"):
+            step["actual"] = raw_stdout or error_message or raw_stderr or "N/A"
+
     def _repair_evidence(self, ev: dict, step_id: str, idx: int) -> dict:
         """修复单个 evidence 对象，确保 5 个必填字段都存在。"""
         ev.setdefault("evidence_id", f"{step_id}_ev_{idx + 1:03d}")
