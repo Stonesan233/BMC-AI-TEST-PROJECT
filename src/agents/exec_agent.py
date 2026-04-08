@@ -170,6 +170,27 @@ def _extract_balanced_json(text: str) -> Optional[str]:
     return None
 
 
+def _strip_thinking_blocks(text: str) -> str:
+    """
+    移除 LLM 输出中的思考块和无关内容，提取纯 JSON。
+
+    处理：</think> 块、</thinking> 标签、代码块标记、说明文字等。
+    """
+    # 移除 </think> 块（可能跨行）
+    text = re.sub(r"</think>.*?</think>", "", text, flags=re.DOTALL)
+    # 移除 </thinking> 标签及后续内容
+    text = re.sub(r"</thinking>.*", "", text, flags=re.DOTALL)
+    # 移除 markdown 代码块标记
+    text = re.sub(r"^```[a-zA-Z]*\s*$", "", text, flags=re.MULTILINE)
+    # 移除行首的行号标记如 "1. " 等
+    text = re.sub(r"^\d+\.\s+", "", text, flags=re.MULTILINE)
+    # 移除常见说明文字
+    text = re.sub(r"^(以下是|下面是|执行结果|结果如下|输出|Output|Result)[:：]\s*", "", text, flags=re.MULTILINE)
+    # 移除多余空白行
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _sanitize_json_string(json_str: str) -> str:
     """
     清理 JSON 字符串中的常见格式问题。
