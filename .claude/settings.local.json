@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__web-search-prime__web_search_prime",
+      "mcp__zread__get_repo_structure",
+      "mcp__zread__read_file",
+      "Bash(cd:*)"
+    ]
+  }
+}

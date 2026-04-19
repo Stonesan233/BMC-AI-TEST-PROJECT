@@ -1,0 +1,21 @@
+用例_编号: REDFISH_Userinfolist_002
+用例_名称: 查询账户信息URL大小写不敏感测试
+测试类型: 功能测试
+优先级: P1
+预置条件: |
+  1. BMC正常运行
+  2. 管理员用户可正常创建会话
+测试步骤: |
+  1. 管理员用户创建会话信息，请求如下：
+     URI信息: https://172.100.20.25/redfish/v1/SessionService/Sessions/
+     Header信息: Content-Type application/json
+     Body信息: { "UserName": "root", "Password":"Huawei12#$" }
+     请求方法：POST
+  2. 发送请求，查看响应报文，有结果 A）
+  3. 修改URI中的路径为全大写 /REDFISH/V1/SESSIONSERVICE/SESSIONS/ 发送请求，有结果 B）
+  4. 修改URI中的路径为混合大小写 /Redfish/V1/SessionService/Sessions/ 发送请求，有结果 C）
+预期结果: |
+  A）请求发送成功，响应报文符合规范，响应码为201
+  B）请求发送成功，响应报文符合规范，响应码为404
+  C）响应体内容符合预期
+notes: 大小写敏感性测试，重点验证 Redfish URL 处理

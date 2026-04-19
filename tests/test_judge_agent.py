@@ -475,7 +475,178 @@ def test_audit_report_generation(tmp_path):
 
 
 # ============================================================
-# Test 8: 完整集成测试（需要真实 API）
+# Test 8: _compact_record_for_judge 字段精简
+# ============================================================
+
+def test_compact_record_field_stripping(judge_agent):
+    """
+    验证点：
+    1. 顶层字段: text_summary / test_case_info / started_at / completed_at / schema_version 被移除
+    2. environment: 仅保留 bmc_host / bmc_user
+    3. prerequisites: 全部 completed 时整体移除
+    4. 步骤: 移除 started_at / completed_at / interface_preference / tool / duration_seconds
+    5. Evidence: 仅保留 evidence_type + content
+    6. 空 environment_recovery_actions 被移除
+    """
+    record = load_fixture_record("case_pass_strict.json")
+    compact = judge_agent._compact_record_for_judge(record)
+
+    # 顶层字段不应存在
+    assert "text_summary" not in compact
+    assert "test_case_info" not in compact
+    assert "started_at" not in compact
+    assert "completed_at" not in compact
+    assert "schema_version" not in compact
+
+    # environment 只保留 bmc_host / bmc_user
+    assert set(compact["environment"].keys()) <= {"bmc_host", "bmc_user"}
+    assert compact["environment"]["bmc_host"] == "192.168.1.100"
+    assert compact["environment"]["bmc_user"] == "Administrator"
+
+    # prerequisites 全 completed -> 移除
+    assert "prerequisites" not in compact
+
+    # 步骤字段精简
+    step = compact["steps"][0]
+    assert "started_at" not in step
+    assert "completed_at" not in step
+    assert "interface_preference" not in step
+    assert "tool" not in step
+
+    # Evidence 只保留 evidence_type + content
+    ev = step["evidence"][0]
+    assert set(ev.keys()) <= {"evidence_type", "content"}
+    assert ev["evidence_type"] == "redfish_response"
+
+    # 空 environment_recovery_actions 被移除
+    assert "environment_recovery_actions" not in compact
+
+    # execution_id / case_id / case_name 应保留
+    assert compact["execution_id"] == record.execution_id
+    assert compact["case_id"] == record.case_id
+
+    print("[PASS] _compact_record_for_judge 字段精简验证通过")
+
+
+# ============================================================
+# Test 9: _compact_record_for_judge Evidence 截断
+# ============================================================
+
+def test_compact_record_evidence_truncation(judge_agent):
+    """
+    验证点：
+    1. Evidence content 超过 1500 chars 时截断并标记 [TRUNCATED]
+    2. Evidence content 未超过时保持原样
+    """
+    record = load_fixture_record("case_pass_strict.json")
+
+    # 手动设置一个超长 evidence content
+    long_content = "A" * 2000
+    record.steps[0].evidence[0].content = long_content
+
+    compact = judge_agent._compact_record_for_judge(record)
+    ev_content = compact["steps"][0]["evidence"][0]["content"]
+
+    assert len(ev_content) <= judge_agent._EVIDENCE_CONTENT_MAX_LEN + len("\n[TRUNCATED]")
+    assert ev_content.endswith("[TRUNCATED]")
+    assert ev_content.startswith("A" * judge_agent._EVIDENCE_CONTENT_MAX_LEN)
+
+    print("[PASS] Evidence 截断验证通过")
+
+
+# ============================================================
+# Test 10: _compact_record_for_judge audit_draft 截断
+# ============================================================
+
+def test_compact_record_audit_draft_truncation(judge_agent):
+    """
+    验证点：
+    1. consolidated_audit_draft 超过 _AUDIT_DRAFT_MAX_LEN 时截断
+    2. 未超过时保持原样
+    3. 截断后 JSON 有效
+    """
+    record = load_fixture_record("case_pass_strict.json")
+
+    # 测试未超限的 draft 保持原样
+    compact = judge_agent._compact_record_for_judge(record)
+    draft = compact.get("consolidated_audit_draft")
+    assert draft is not None
+    assert "[TRUNCATED]" not in draft
+
+    # 测试超限截断
+    long_draft = "# Audit Draft\n" + "X" * 3000
+    record.consolidated_audit_draft = long_draft
+
+    compact = judge_agent._compact_record_for_judge(record)
+    draft = compact.get("consolidated_audit_draft")
+    assert draft is not None
+    assert len(draft) <= judge_agent._AUDIT_DRAFT_MAX_LEN + len("\n[TRUNCATED]")
+    assert draft.endswith("[TRUNCATED]")
+
+    # 验证 JSON 有效
+    import json
+    json_str = json.dumps(compact, ensure_ascii=False, default=str)
+    parsed = json.loads(json_str)
+    assert parsed["consolidated_audit_draft"].endswith("[TRUNCATED]")
+
+    print("[PASS] audit_draft 截断验证通过")
+
+
+# ============================================================
+# Test 11: _progressive_strip_for_budget 渐进式精简
+# ============================================================
+
+def test_progressive_strip_for_budget(judge_agent):
+    """
+    验证点：
+    1. Level 1: 移除 consolidated_audit_draft 后符合预算
+    2. Level 2: evidence 截断后符合预算
+    3. Level 3: evidence 只保留 type 后符合预算
+    4. Level 4: 极限精简后符合预算
+    5. 返回的 JSON 始终有效
+    6. 兜底: 即使极限精简仍超预算，也能返回最小有效 JSON
+    """
+    import json
+
+    record = load_fixture_record("case_pass_strict.json")
+    compact = judge_agent._compact_record_for_judge(record)
+
+    # 测试 Level 1: budget 略小于带 draft 的 JSON
+    full_json = json.dumps(compact, ensure_ascii=False, default=str)
+    draft = compact.get("consolidated_audit_draft", "")
+    if draft:
+        # 移除 draft 后的大小
+        no_draft = {k: v for k, v in compact.items() if k != "consolidated_audit_draft"}
+        no_draft_json = json.dumps(no_draft, ensure_ascii=False, default=str)
+        # budget 设在两者之间，应触发 Level 1
+        budget = len(no_draft_json) + 10
+        if budget < len(full_json):
+            result = judge_agent._progressive_strip_for_budget(
+                dict(compact), budget  # 使用副本
+            )
+            assert len(result) <= budget
+            parsed = json.loads(result)
+            assert "consolidated_audit_draft" not in parsed
+            assert parsed["execution_id"] == record.execution_id
+
+    # 测试极限预算: 极小 budget 应返回有效 JSON
+    tiny_budget = 200
+    result = judge_agent._progressive_strip_for_budget(dict(compact), tiny_budget)
+    assert len(result) <= max(tiny_budget, 200)
+    parsed = json.loads(result)
+    assert "execution_id" in parsed
+
+    # 测试正常 budget（不需要精简）
+    large_budget = 100000
+    result = judge_agent._progressive_strip_for_budget(dict(compact), large_budget)
+    parsed = json.loads(result)
+    assert parsed["execution_id"] == record.execution_id
+
+    print("[PASS] _progressive_strip_for_budget 渐进式精简验证通过")
+
+
+# ============================================================
+# Test 12: 完整集成测试（需要真实 API）
 # ============================================================
 
 @pytest.mark.asyncio
@@ -540,6 +711,10 @@ if __name__ == "__main__":
         pytest tests/test_judge_agent.py::test_judge_clear_fail_case -v
         pytest tests/test_judge_agent.py::test_judge_error_handling -v
         pytest tests/test_judge_agent.py::test_audit_report_generation -v
+        pytest tests/test_judge_agent.py::test_compact_record_field_stripping -v
+        pytest tests/test_judge_agent.py::test_compact_record_evidence_truncation -v
+        pytest tests/test_judge_agent.py::test_compact_record_audit_draft_truncation -v
+        pytest tests/test_judge_agent.py::test_progressive_strip_for_budget -v
 
     注意：test_judge_full_integration 需要真实 API Key
     """)

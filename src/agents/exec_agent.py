@@ -37,6 +37,11 @@ from src.tools.ssh_tool import SSHTool
 from src.tools.ssh_session_manager import SSHSessionManager
 from src.utils.file_handler import save_execution_record
 from src.rag.retriever import HybridRetriever
+from src.tools.environment_recovery_tool import (
+    EnvironmentRecoveryTool,
+    RecoveryMode,
+    RecoveryResult,
+)
 
 # ======================================================================
 # 日志配置（实时写入文件 + 控制台）
@@ -563,6 +568,42 @@ class ExecAgent:
             "ssh_session": self._tool_ssh_session,
         }
 
+        # Environment Recovery Tool (v2.0 - Hybrid Mode)
+        recovery_cfg = {
+            "bmc_host": self.bmc_host,
+            "bmc_port": self.bmc_port,
+            "bmc_user": self.bmc_user,
+            "bmc_password": self.bmc_password,
+            "ipmi_host": self.ipmi_host,
+            "ipmi_port": self.ipmi_port,
+            "os_host": target.get("os_host"),
+            "os_user": target.get("os_user", "root"),
+            "os_password": target.get("os_password", ""),
+            "verify_ssl": self._verify_ssl,
+        }
+        recovery_mode_str = (
+            agent_cfg.get("recovery", {}).get("mode", "hybrid")
+            if isinstance(agent_cfg, dict) else "hybrid"
+        )
+        try:
+            recovery_mode = RecoveryMode(recovery_mode_str)
+        except ValueError:
+            logger.warning(
+                f"Invalid recovery mode '{recovery_mode_str}', defaulting to HYBRID"
+            )
+            recovery_mode = RecoveryMode.HYBRID
+
+        self._recovery_tool = EnvironmentRecoveryTool(
+            config=recovery_cfg,
+            llm_client=self.client,
+            llm_model=self.model,
+            mode=recovery_mode,
+        )
+        logger.info(
+            f"环境恢复工具已初始化 | mode={recovery_mode.value} | "
+            f"llm={'on' if self.client else 'off'}"
+        )
+
         logger.info(f"使用模型: {self.model} | base_url: {self.base_url}")
         logger.info(f"参数: temperature={self.temperature}, max_tokens={self.max_tokens}")
         logger.info(f"目标 BMC: {self.bmc_host}:{self.bmc_port} | IPMI: {self.ipmi_host}:{self.ipmi_port} | SSH: {self.ssh_host}:{self.ssh_port}")
@@ -684,6 +725,9 @@ class ExecAgent:
         # 自动保存
         self._save_record(record)
 
+        # 执行环境恢复（每条用例后）
+        await self._run_recovery(case_name)
+
         logger.info(f"执行完成: {case_name} -> {record.overall_status}")
         return record
 
@@ -701,7 +745,37 @@ class ExecAgent:
                 records.append(
                     self._build_failure_record(case, datetime.now(), error_msg=str(e))
                 )
+                # 异常时也执行环境恢复
+                case_name = case.get("name", case.get("用例_名称", "unknown"))
+                await self._run_recovery(case_name)
         return records
+
+    async def _run_recovery(self, case_name: str = "") -> RecoveryResult:
+        """
+        执行环境恢复。
+
+        在每条测试用例执行后调用，确保环境干净。
+        根据 config 中 recovery.mode 决定恢复策略。
+        """
+        logger.info(f"[Recovery] 开始环境恢复 (after: {case_name})")
+        try:
+            result = await self._recovery_tool.recover()
+            if result.recovered:
+                logger.info(
+                    f"[Recovery] 环境恢复成功 | phase={result.phase}"
+                )
+            else:
+                logger.warning(
+                    f"[Recovery] 环境恢复失败 | phase={result.phase} | "
+                    f"warnings={result.warnings}"
+                )
+            return result
+        except Exception as e:
+            logger.error(f"[Recovery] 环境恢复异常: {e}", exc_info=True)
+            return RecoveryResult(
+                recovered=False,
+                warnings=[f"Recovery exception: {e}"],
+            )
 
     # ==================================================================
     # Prompt

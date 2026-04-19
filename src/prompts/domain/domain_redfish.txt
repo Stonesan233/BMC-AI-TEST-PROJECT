@@ -1,0 +1,5 @@
+## Redfish 响应
+
+- HTTP 2xx 仅表示请求成功，不代表业务成功
+- 成功: {"@MessageId": "Base.1.0.Success"}；错误: 含 "error" 字段
+- PATCH 后须重新 GET 验证修改是否生效

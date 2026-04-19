@@ -1,0 +1,57 @@
+# openUBMC 测试用例 - 混合场景：通过 IPMI 和 Redfish 查询 BMC 固件版本
+# 特点：模糊描述，Agent 需要同时考虑 IPMI 和 Redfish 两种查询方式
+# RAG 职责：根据模糊描述同时检索 IPMI Get Device ID 和 Redfish GET /redfish/v1/Managers
+#          返回两种接口的推荐方案，由 Agent 选择最优执行路径
+
+用例_编号: "TC-MIX-FW-001"
+用例_名称: "通过多种接口查询BMC固件版本信息"
+测试类型: "功能测试"
+优先级: "P1"
+
+预置条件:
+  - BMC 网络可达（HTTPS 端口 443 / IPMI UDP 端口 623）
+  - Redfish 认证正常（Administrator / Admin@90000）
+  - IPMI 认证正常（Administrator / Admin@90000, cipher_suite=17）
+  - BMC 固件已正常加载（非升级中状态）
+
+测试步骤:
+  - step_id: "step_001"
+    description: "看看这台BMC跑的是什么软件版本"
+    interface_preference: "any"
+    expected:
+      success: true
+      result_contains:
+        - "firmware"
+        - "version"
+
+  - step_id: "step_002"
+    description: "通过Redfish接口查一下管理模块的固件版本号"
+    interface_preference: "redfish"
+    expected:
+      success: true
+      result_contains:
+        - "FirmwareVersion"
+
+  - step_id: "step_003"
+    description: "用IPMI命令获取设备信息，确认固件版本"
+    interface_preference: "ipmi"
+    expected:
+      success: true
+      result_not_empty: true
+
+  - step_id: "step_004"
+    description: "确认两种方式获取的固件版本号是否一致"
+    interface_preference: "any"
+    expected:
+      success: true
+      result_not_empty: true
+
+预期结果:
+  - step_001: 返回固件版本号信息，值非空且格式合理（如 x.y.z 形式）
+  - step_002: 通过 Redfish GET /redfish/v1/Managers/{id} 返回 FirmwareVersion 字段，值非空
+  - step_003: 通过 IPMI Get Device ID (NetFn=0x06, Cmd=0x01) 返回设备信息，包含固件版本
+  - step_004: 对比步骤 2 和步骤 3 获取的版本号，应相同或为同一版本的不同表示
+  - 所有步骤执行成功，HTTP 状态码为 200 或 IPMI 命令完成码为 0x00
+
+清理步骤:
+  - 无需清理（只读操作）

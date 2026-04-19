@@ -1,0 +1,4 @@
+## 电源状态
+
+- 有效值: On, Off, PoweringOn, PoweringOff
+- 开机/关机命令后须验证 PowerState 确实变为目标值

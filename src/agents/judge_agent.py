@@ -61,6 +61,10 @@ def _safe_enum(value: Any, allowed: Tuple[str, ...], default: str) -> str:
 _PASS_FAIL = ("PASS", "FAIL")
 _RISK_LEVELS = ("none", "low", "medium", "high")
 
+# Prompt 长度预算（字符数），超过此值触发警告日志
+_PROMPT_LENGTH_WARNING_THRESHOLD = 8000
+_PROMPT_LENGTH_BUDGET = 12000
+
 
 # ======================================================================
 # JudgeOutputParser - 输出解析器类
@@ -525,11 +529,16 @@ class JudgeAgent:
         await factory.close()
     """
 
+    # LLM 调用重试配置
+    _LLM_MAX_RETRIES = 3       # 最大重试次数（含首次调用）
+    _LLM_RETRY_BASE_DELAY = 1.0  # 重试基础延迟（秒），指数退避
+
     def __init__(
         self,
         config: AppConfig,
         client_factory: ClientFactory,
         shared_dir: str = "./shared",
+        client: Optional[AsyncOpenAI] = None,
     ):
         """
         初始化 Judge Agent。
@@ -538,14 +547,17 @@ class JudgeAgent:
             config: AppConfig 实例
             client_factory: ClientFactory 实例（调用方拥有，负责生命周期）
             shared_dir: 共享目录根路径
+            client: 可选的外部 AsyncOpenAI 客户端（用于真实 LLM 测试）
+                     若提供则优先使用，忽略 client_factory
         """
         self._config = config
         self._factory = client_factory
         self._shared_dir = shared_dir
+        self._external_client = client  # 外部注入的真实 LLM 客户端
+        self._client: Optional[AsyncOpenAI] = None  # 懒初始化：首次 _get_client() 时由 factory 创建
 
         # 加载 judge 组件配置
         self._judge_comp = get_component_config(config, "judge")
-        self._client: Optional[AsyncOpenAI] = None
 
         # 解析器实例
         self._parser = JudgeOutputParser()
@@ -554,11 +566,17 @@ class JudgeAgent:
         self._system_prompt = self._load_combined_system_prompt()
         self._user_template = self._load_prompt("judge_user_template_v2.1.txt")
 
-        logger.info(
-            f"JudgeAgent 初始化: provider={self._judge_comp.provider_name}, "
-            f"model={self._judge_comp.model}, "
-            f"base_url={self._judge_comp.base_url}"
-        )
+        if client is not None:
+            logger.info(
+                f"JudgeAgent 初始化: 使用外部客户端, "
+                f"model={self._judge_comp.model}"
+            )
+        else:
+            logger.info(
+                f"JudgeAgent 初始化: provider={self._judge_comp.provider_name}, "
+                f"model={self._judge_comp.model}, "
+                f"base_url={self._judge_comp.base_url}"
+            )
 
     # ------------------------------------------------------------------
     # Prompt 加载（支持模块化组合）
@@ -575,45 +593,407 @@ class JudgeAgent:
 
     def _load_combined_system_prompt(self) -> str:
         """
-        加载并组合系统 Prompt。
+        加载并组合系统 Prompt（核心规则 + 输出格式）。
 
-        优先加载组合文件（judge_system_v2.1.txt），
-        如果拆分文件存在则按顺序组合：
-          1. judge_system_core.txt       - 核心规则
-          2. judge_system_openubmc.txt   - 领域知识
-          3. judge_system_output.txt     - 输出格式
+        领域知识不再在此处加载，改为按需动态注入。
         """
         prompts_dir = Path(__file__).resolve().parent.parent / "prompts"
 
-        # 检查拆分文件是否存在
         parts = [
             "judge_system_core.txt",
-            "judge_system_openubmc.txt",
             "judge_system_output.txt",
         ]
-        all_exist = all((prompts_dir / p).exists() for p in parts)
+        sections = []
+        for part_file in parts:
+            path = prompts_dir / part_file
+            if path.exists():
+                sections.append(path.read_text(encoding="utf-8").strip())
 
-        if all_exist:
-            sections = []
-            for part_file in parts:
-                content = (prompts_dir / part_file).read_text(encoding="utf-8").strip()
-                sections.append(content)
-            combined = "\n\n---\n\n".join(sections)
-            logger.info(
-                f"System Prompt 组合加载: {len(sections)} 个模块, "
-                f"总长度 {len(combined)} 字符"
+        if not sections:
+            # 拆分文件均不存在，fallback 到单文件版本
+            logger.warning(
+                f"未找到拆分 Prompt 文件 ({', '.join(parts)}), "
+                f"尝试加载单文件 fallback"
             )
-            return combined
+            try:
+                return self._load_prompt("judge_system_v2.1.txt")
+            except FileNotFoundError as e:
+                raise FileNotFoundError(
+                    f"Prompt 文件均不可用: 拆分文件({prompts_dir}) 和 "
+                    f"单文件(judge_system_v2.1.txt) 均未找到。"
+                    f"请确认 src/prompts/ 目录下存在 Prompt 文件。"
+                ) from e
 
-        # fallback: 使用单文件
-        return self._load_prompt("judge_system_v2.1.txt")
+        combined = "\n\n---\n\n".join(sections)
+        logger.info(
+            f"System Prompt 基础加载: {len(sections)} 个模块, "
+            f"总长度 {len(combined)} 字符"
+        )
+        return combined
+
+    # ------------------------------------------------------------------
+    # 领域知识动态加载
+    # ------------------------------------------------------------------
+
+    # 领域模块与关键词映射
+    _DOMAIN_MODULES: Dict[str, List[str]] = {
+        "domain_user_mgmt": [
+            "user", "account", "用户", "账户", "密码", "password",
+            "权限", "role", "administrator", "添加用户", "删除用户",
+        ],
+        "domain_redfish": [
+            "redfish", "/redfish/v1", "patch", "post", "delete",
+            "http", "api", "redfish", "odata",
+        ],
+        "domain_power": [
+            "power", "电源", "开机", "关机", "上下电", "powerstate",
+            "poweringon", "poweringoff",
+        ],
+        "domain_sensor": [
+            "sensor", "传感器", "温度", "temperature", "风扇", "fan",
+            "health", "reading", "sdr",
+        ],
+        "domain_ipmi": [
+            "ipmi", "ipmitool", "raw", "sel", "fru", "mc info",
+            "chassis", "ipmi命令",
+        ],
+    }
+
+    def _resolve_domain_modules(
+        self, execution_record: ExecutionRecord
+    ) -> List[str]:
+        """
+        根据 ExecutionRecord 内容动态决定需要加载的领域知识模块。
+
+        策略：将 execution_record 序列化为文本，对每个模块的关键词
+        进行匹配。命中的模块才会被加载，从而减少 prompt 长度。
+        """
+        try:
+            record_text = json.dumps(
+                execution_record.model_dump(mode="json"),
+                ensure_ascii=False,
+            ).lower()
+        except Exception:
+            # 序列化失败时加载全部模块（保守策略）
+            return list(self._DOMAIN_MODULES.keys())
+
+        matched = []
+        for module_name, keywords in self._DOMAIN_MODULES.items():
+            for kw in keywords:
+                if kw.lower() in record_text:
+                    matched.append(module_name)
+                    break
+
+        logger.info(f"领域知识动态匹配: {matched}")
+        return matched
+
+    def _load_domain_prompt(self, module_names: List[str]) -> str:
+        """
+        按模块名列表加载领域知识，拼接为单段文本。
+
+        Args:
+            module_names: 需要加载的领域模块名列表
+
+        Returns:
+            拼接后的领域知识文本，模块间用分隔线连接
+        """
+        if not module_names:
+            return ""
+
+        domain_dir = (
+            Path(__file__).resolve().parent.parent / "prompts" / "domain"
+        )
+        sections: List[str] = []
+        for name in module_names:
+            path = domain_dir / f"{name}.txt"
+            if path.exists():
+                content = path.read_text(encoding="utf-8").strip()
+                if content:
+                    sections.append(content)
+            else:
+                logger.warning(f"领域知识模块不存在: {path}")
+
+        if not sections:
+            return ""
+
+        return "\n\n---\n\n".join(sections)
+
+    # ------------------------------------------------------------------
+    # ExecutionRecord 精简（IMP-003: 减少 Prompt 总长度）
+    # ------------------------------------------------------------------
+
+    # Judge 不需要的步骤字段（降低传输量）
+    _STEP_STRIP_FIELDS = frozenset({
+        "started_at", "completed_at", "interface_preference",
+        "tool", "duration_seconds", "retry_count",
+    })
+    # Judge 不需要的顶层字段
+    _RECORD_STRIP_FIELDS = frozenset({
+        "text_summary", "test_case_info",
+        "started_at", "completed_at", "schema_version",
+    })
+    # Evidence 中只保留 Judge 判断必需的字段
+    _EVIDENCE_KEEP_FIELDS = frozenset({
+        "evidence_type", "content",
+    })
+
+    # Evidence content 截断阈值（单条 evidence content 最大字符数）
+    # 典型 Redfish 单资源响应 500-2000 chars，1500 覆盖绝大多数场景
+    _EVIDENCE_CONTENT_MAX_LEN = 1500
+
+    # consolidated_audit_draft 截断阈值（供 Judge 参考的审计草案最大字符数）
+    # 审计草案为参考信息，2000 chars 足以保留核心摘要
+    _AUDIT_DRAFT_MAX_LEN = 2000
+
+    # Evidence content 二次截断阈值（渐进精简 Level 2 使用）
+    _EV_CONTENT_REDUCED_LEN = 500
+
+    # Level 4 中 actual 值转字符串后的最大长度（超过则截断）
+    _ACTUAL_STR_MAX_LEN = 300
+
+    # Prompt Record 预算下限（防止 system+domain 过长导致预算为负）
+    _RECORD_BUDGET_FLOOR = 2000
+
+    def _compact_record_for_judge(self, record: ExecutionRecord) -> dict:
+        """
+        精简 ExecutionRecord，仅保留 Judge 判断所需字段。
+
+        移除策略:
+        - 顶层: text_summary / test_case_info / 时间戳 / schema_version（保留 consolidated_audit_draft 供参考）
+        - environment: 仅保留 bmc_host / bmc_user（供 Judge 定位设备）
+        - 步骤: 移除时间戳、interface_preference、tool、duration 等
+        - Evidence: 仅保留 evidence_type + content（去掉 metadata/captured_at/id）
+        - Evidence content: 超过 1500 字符时截断并标记 [TRUNCATED]
+        - EnvironmentRecoveryAction: 移除时间戳
+        - 空 evidence / 空 prerequisites: 整体移除
+
+        Args:
+            record: 原始 ExecutionRecord
+
+        Returns:
+            精简后的 dict（不修改原始对象）
+        """
+        data = record.model_dump(mode="json")
+
+        # 顶层字段清理
+        for field in self._RECORD_STRIP_FIELDS:
+            data.pop(field, None)
+
+        # 精简 environment
+        env = data.get("environment")
+        if isinstance(env, dict):
+            data["environment"] = {
+                k: v for k, v in env.items()
+                if k in ("bmc_host", "bmc_user")
+            }
+
+        # 精简 prerequisites：仅保留非空且非 completed 的项
+        prereqs = data.get("prerequisites")
+        if isinstance(prereqs, list) and all(
+            isinstance(p, dict) and p.get("status") == "completed"
+            for p in prereqs
+        ):
+            data.pop("prerequisites", None)
+
+        # 精简步骤
+        for step in data.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            for field in self._STEP_STRIP_FIELDS:
+                step.pop(field, None)
+
+            # 精简 evidence
+            ev_list = step.get("evidence")
+            if isinstance(ev_list, list):
+                compacted = []
+                for ev in ev_list:
+                    if not isinstance(ev, dict):
+                        continue
+                    item = {k: v for k, v in ev.items() if k in self._EVIDENCE_KEEP_FIELDS}
+                    # 跳过过滤后为空的 evidence 条目（既无 type 也无 content）
+                    if not item:
+                        continue
+                    # 截断过长的 evidence content
+                    content = item.get("content")
+                    if isinstance(content, str) and len(content) > self._EVIDENCE_CONTENT_MAX_LEN:
+                        item["content"] = content[:self._EVIDENCE_CONTENT_MAX_LEN] + "\n[TRUNCATED]"
+                        logger.debug(
+                            f"Evidence 截断: step={step.get('step_id', '?')}, "
+                            f"original={len(content)} -> {self._EVIDENCE_CONTENT_MAX_LEN} chars"
+                        )
+                    compacted.append(item)
+                step["evidence"] = compacted if compacted else []
+
+        # 精简 environment_recovery_actions
+        for action in data.get("environment_recovery_actions", []):
+            if isinstance(action, dict):
+                action.pop("started_at", None)
+                action.pop("completed_at", None)
+                action.pop("duration_seconds", None)
+
+        # 截断过长的 consolidated_audit_draft（参考信息，无需完整保留）
+        draft = data.get("consolidated_audit_draft")
+        if isinstance(draft, str) and len(draft) > self._AUDIT_DRAFT_MAX_LEN:
+            data["consolidated_audit_draft"] = (
+                draft[:self._AUDIT_DRAFT_MAX_LEN] + "\n[TRUNCATED]"
+            )
+            logger.info(
+                f"consolidated_audit_draft 截断: "
+                f"{len(draft)} -> {self._AUDIT_DRAFT_MAX_LEN} chars"
+            )
+
+        # 移除空的顶层列表字段
+        for key in ("environment_recovery_actions",):
+            if isinstance(data.get(key), list) and len(data[key]) == 0:
+                data.pop(key, None)
+
+        return data
+
+    def _truncate_actual(self, value: Any) -> Any:
+        """
+        截断 actual 字段值，确保 Level 4 极限精简时不会因单个 actual 过大而超预算。
+
+        - None / 简单类型（bool/int/float/短字符串）: 原样返回
+        - 长字符串: 截断到 _ACTUAL_STR_MAX_LEN
+        - dict/list: 转为字符串后截断（保留可读性，牺牲 JSON 结构）
+        """
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            if len(value) <= self._ACTUAL_STR_MAX_LEN:
+                return value
+            return value[:self._ACTUAL_STR_MAX_LEN] + "...[TRUNCATED]"
+        # dict/list: 转字符串后截断
+        s = json.dumps(value, ensure_ascii=False, default=str)
+        if len(s) <= self._ACTUAL_STR_MAX_LEN:
+            return value  # 未超限，保持原始结构
+        return s[:self._ACTUAL_STR_MAX_LEN] + "...[TRUNCATED]"
+
+    def _progressive_strip_for_budget(self, data: dict, budget: int) -> str:
+        """
+        渐进式精简 Record 数据，确保 JSON 始终有效且不超过 budget。
+
+        当紧凑 JSON 仍超出 prompt 预算时，按优先级逐步移除低重要性数据，
+        而非直接截断字符串（会产生无效 JSON）。
+
+        精简优先级（从低重要性到高）：
+        1. 移除 consolidated_audit_draft（参考信息，Judge 可独立判断）
+        2. evidence content 截断到 _EV_CONTENT_REDUCED_LEN (500 chars)
+        3. evidence 只保留 evidence_type（Judge 仅知证据类型）
+        4. 只保留步骤核心判断字段（id/status/expected/actual/error）
+        5. 兜底：仅含 execution_id 的最小 JSON
+
+        注意：此方法会修改传入的 data dict（调用方已持有局部副本）。
+
+        Args:
+            data: _compact_record_for_judge 返回的精简 dict
+            budget: 目标 JSON 最大字符数
+
+        Returns:
+            不超过 budget 的有效 JSON 字符串
+        """
+        # Level 1: 移除 consolidated_audit_draft（参考信息，优先级最低）
+        if "consolidated_audit_draft" in data:
+            data.pop("consolidated_audit_draft")
+            json_str = json.dumps(data, ensure_ascii=False, default=str)
+            if len(json_str) <= budget:
+                logger.info(
+                    "渐进精简 L1: 移除 consolidated_audit_draft, "
+                    f"{len(json_str)} chars <= budget={budget}"
+                )
+                return json_str
+
+        # Level 2: evidence content 截断到更短
+        for step in data.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            for ev in step.get("evidence", []):
+                if not isinstance(ev, dict):
+                    continue
+                content = ev.get("content")
+                if isinstance(content, str) and len(content) > self._EV_CONTENT_REDUCED_LEN:
+                    # 清理前一轮截断残留的 [TRUNCATED] 标记，避免双重标记
+                    if content.endswith("[TRUNCATED]"):
+                        content = content.rsplit("\n[TRUNCATED]", 1)[0]
+                    ev["content"] = (
+                        content[:self._EV_CONTENT_REDUCED_LEN] + "\n[TRUNCATED]"
+                    )
+        json_str = json.dumps(data, ensure_ascii=False, default=str)
+        if len(json_str) <= budget:
+            logger.info(
+                f"渐进精简 L2: evidence 截断到 {self._EV_CONTENT_REDUCED_LEN} chars, "
+                f"{len(json_str)} chars"
+            )
+            return json_str
+
+        # Level 3: evidence 只保留 evidence_type
+        for step in data.get("steps", []):
+            if not isinstance(step, dict):
+                continue
+            step["evidence"] = [
+                {"evidence_type": ev.get("evidence_type", "unknown")}
+                for ev in step.get("evidence", [])
+                if isinstance(ev, dict)
+            ]
+        json_str = json.dumps(data, ensure_ascii=False, default=str)
+        if len(json_str) <= budget:
+            logger.info(f"渐进精简 L3: evidence 只保留 type, {len(json_str)} chars")
+            return json_str
+
+        # Level 4: 只保留步骤核心判断字段（actual 过长时截断）
+        minimal = {
+            "execution_id": data.get("execution_id", "unknown"),
+            "case_id": data.get("case_id", "unknown"),
+            "case_name": data.get("case_name", "unknown"),
+            "environment": data.get("environment", {}),
+            "steps": [
+                {
+                    "step_id": s.get("step_id", "unknown"),
+                    "status": s.get("status"),
+                    "expected": s.get("expected"),
+                    "actual": self._truncate_actual(s.get("actual")),
+                    "error_message": s.get("error_message"),
+                }
+                for s in data.get("steps", [])
+                if isinstance(s, dict)
+            ],
+            "_truncation_notice": (
+                "Record truncated to fit prompt budget. "
+                "Evidence and non-essential fields removed."
+            ),
+        }
+        json_str = json.dumps(minimal, ensure_ascii=False, default=str)
+        if len(json_str) <= budget:
+            logger.warning(f"渐进精简 L4: 极限精简（核心字段 + actual 截断）, {len(json_str)} chars")
+            return json_str
+
+        # 兜底：仅含元信息的最小 JSON（始终不超过 budget）
+        logger.error(
+            f"Record 即使极限精简仍超预算: {len(json_str)} > {budget}, "
+            f"使用最小元信息 JSON"
+        )
+        return json.dumps({
+            "execution_id": data.get("execution_id", "unknown"),
+            "_error": "Record too large for prompt budget, judgment may be unreliable",
+        }, ensure_ascii=False)
 
     # ------------------------------------------------------------------
     # 客户端获取
     # ------------------------------------------------------------------
 
     def _get_client(self) -> AsyncOpenAI:
-        """获取或创建 Judge 组件的 API 客户端（由 ClientFactory 管理生命周期）。"""
+        """
+        获取 Judge LLM 客户端。
+
+        优先级：
+        1. 外部注入的客户端（真实测试用）
+        2. ClientFactory 创建的客户端
+        """
+        # 优先使用外部注入的客户端
+        if self._external_client is not None:
+            return self._external_client
+
+        # 使用 factory 创建的客户端
         if self._client is None:
             self._client = self._factory.create_for("judge")
         return self._client
@@ -846,55 +1226,136 @@ class JudgeAgent:
         调用 Judge 模型进行判断。
 
         使用三层 Prompt 结构：
-        - Layer 1+2: System Prompt（角色 + 领域知识）
+        - Layer 1: System Prompt（核心规则 + 输出格式）
+        - Layer 2: Domain Prompt（动态领域知识，按需加载）
         - Layer 3: Task Prompt（当前 Execution Record）
+
+        内置重试机制：最多重试 _LLM_MAX_RETRIES 次（默认 2 次），
+        覆盖网络抖动和偶发服务端错误。
         """
         client = self._get_client()
 
-        # 构建 Task Prompt（Layer 3）
+        # 动态加载领域知识
+        domain_modules = self._resolve_domain_modules(execution_record)
+        domain_text = self._load_domain_prompt(domain_modules)
+
+        # 拼接最终 system prompt（核心规则 + 动态领域知识）
+        if domain_text:
+            system_prompt = f"{self._system_prompt}\n\n---\n\n# 领域知识（按需加载）\n\n{domain_text}"
+        else:
+            system_prompt = self._system_prompt
+
+        # 构建 Task Prompt（Layer 3）- 使用精简后的 Record
+        compact_data = self._compact_record_for_judge(execution_record)
         record_json = json.dumps(
-            execution_record.model_dump(mode="json"),
+            compact_data,
             ensure_ascii=False,
             indent=2,
             default=str,
         )
+
+        # IMP-003: Prompt 总长度预算控制
+        # 若 record_json 过长，进一步压缩为紧凑 JSON（无缩进）
+        system_len = len(system_prompt)
+        template_overhead = len(self._user_template) - len("{execution_record_json}")
+        record_budget = _PROMPT_LENGTH_BUDGET - system_len - template_overhead
+
+        # 下限保护：确保 record_budget 至少为 _RECORD_BUDGET_FLOOR，
+        # 防止 system_prompt + domain_text 过长导致预算为负
+        if record_budget < self._RECORD_BUDGET_FLOOR:
+            logger.warning(
+                f"Prompt 预算紧张: system={system_len}, overhead={template_overhead}, "
+                f"budget={record_budget} < floor={self._RECORD_BUDGET_FLOOR}, "
+                f"使用下限值"
+            )
+            record_budget = self._RECORD_BUDGET_FLOOR
+
+        if len(record_json) > record_budget:
+            # 紧凑模式：去除缩进
+            record_json_compact = json.dumps(
+                compact_data, ensure_ascii=False, default=str,
+            )
+            if len(record_json_compact) <= record_budget:
+                record_json = record_json_compact
+                logger.info(
+                    f"Record JSON 切换紧凑模式: {len(record_json_compact)} chars"
+                )
+            else:
+                # 紧凑仍超预算，渐进式精简（确保 JSON 始终有效）
+                record_json = self._progressive_strip_for_budget(
+                    compact_data, record_budget
+                )
+                logger.warning(
+                    f"Record JSON 超预算，渐进精简至 {len(record_json)} chars "
+                    f"(budget={record_budget})"
+                )
+
         user_message = self._user_template.replace(
             "{execution_record_json}", record_json
         )
 
+        # Prompt 总长度追踪（IMP-003）
+        total_prompt_len = len(system_prompt) + len(user_message)
         logger.info(
             f"调用 Judge 模型: model={self._judge_comp.model}, "
-            f"record_json_len={len(record_json)}"
+            f"system_prompt={len(system_prompt)} chars, "
+            f"domain_modules={domain_modules}, "
+            f"record_json={len(record_json)} chars, "
+            f"total_prompt={total_prompt_len} chars"
         )
-
-        # 调用 API（非流式，需要完整响应以便解析）
-        response = await client.chat.completions.create(
-            model=self._judge_comp.model,
-            messages=[
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.0,
-            max_tokens=self._judge_comp.max_tokens,
-        )
-
-        # 提取文本
-        if not response.choices:
-            raise ValueError("Judge 模型返回空响应")
-
-        content = response.choices[0].message.content
-        if not content:
-            raise ValueError("Judge 模型返回空内容")
-
-        # 记录 token 使用情况
-        if response.usage:
-            logger.info(
-                f"Judge token 使用: prompt={response.usage.prompt_tokens}, "
-                f"completion={response.usage.completion_tokens}, "
-                f"total={response.usage.total_tokens}"
+        if total_prompt_len > _PROMPT_LENGTH_WARNING_THRESHOLD:
+            logger.warning(
+                f"Prompt 总长度 {total_prompt_len} chars "
+                f"超过警告阈值 {_PROMPT_LENGTH_WARNING_THRESHOLD} chars"
             )
 
-        return content
+        # 重试调用（覆盖网络抖动和偶发服务端错误）
+        last_error = None
+        for attempt in range(1, self._LLM_MAX_RETRIES + 1):
+            try:
+                response = await client.chat.completions.create(
+                    model=self._judge_comp.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_message},
+                    ],
+                    temperature=0.0,
+                    max_tokens=self._judge_comp.max_tokens,
+                )
+
+                # 提取文本
+                if not response.choices:
+                    raise ValueError("Judge 模型返回空响应")
+
+                content = response.choices[0].message.content
+                if not content:
+                    raise ValueError("Judge 模型返回空内容")
+
+                # 记录 token 使用情况
+                if response.usage:
+                    logger.info(
+                        f"Judge token 使用: prompt={response.usage.prompt_tokens}, "
+                        f"completion={response.usage.completion_tokens}, "
+                        f"total={response.usage.total_tokens}"
+                    )
+
+                return content
+
+            except Exception as e:
+                last_error = e
+                if attempt < self._LLM_MAX_RETRIES:
+                    wait = self._LLM_RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                    logger.warning(
+                        f"Judge 模型调用第 {attempt} 次失败: {e}, "
+                        f"{wait:.1f}s 后重试..."
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    logger.error(
+                        f"Judge 模型调用重试 {self._LLM_MAX_RETRIES} 次后仍失败: {e}"
+                    )
+
+        raise last_error  # type: ignore[misc]
 
     def _persist_audit_report(
         self,

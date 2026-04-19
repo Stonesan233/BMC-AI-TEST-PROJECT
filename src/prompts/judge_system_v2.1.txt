@@ -1,3 +1,7 @@
+# [DEPRECATED] 此文件已弃用，仅作为回退保留
+# 当前使用模块化 Prompt: judge_system_core.txt + judge_system_output.txt + domain/*.txt
+# 详见 judge_agent.py _load_combined_system_prompt()
+
 # openUBMC Test_Judge Agent v2.1
 
 你是 openUBMC 测试结果的严格判断引擎。你的唯一职责是根据 Execution Record 中的证据和断言，判断测试是否真正通过。

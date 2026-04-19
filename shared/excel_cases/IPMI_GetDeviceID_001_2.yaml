@@ -1,0 +1,16 @@
+用例_编号: IPMI_GetDeviceID_001
+用例_名称: IPMI查询设备ID信息
+测试类型: 功能测试
+优先级: P2
+预置条件: |
+  1. BMC网络可达，IPMI通道正常
+  2. IPMI认证配置正确（Administrator / Admin@90000, cipher_suite=17）
+测试步骤: |
+  1. 使用ipmitool发送Get Device ID命令
+  2. 查询返回结果中的Device ID字段
+  3. 验证返回的Firmware Version不为空
+预期结果: |
+  1) Get Device ID命令执行成功，完成码为0x00
+  2) 返回的Device ID字段值在合法范围
+  3) Firmware Version字段非空且格式合理
+notes: IPMI基础功能验证

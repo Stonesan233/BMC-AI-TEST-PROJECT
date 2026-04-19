@@ -1,0 +1,4 @@
+## 传感器数据
+
+- Status.Health 应为 OK 或 Warning；Status.State 应为 Enabled
+- Reading 值应在正常范围内

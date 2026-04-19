@@ -1,0 +1,498 @@
+{
+  "modes": {
+    "vector": {
+      "total": 40,
+      "P@1": 0.75,
+      "P@3": 0.9,
+      "MRR@1": 0.75,
+      "MRR@3": 0.8167,
+      "by_category": {
+        "exact_cn": {
+          "count": 8,
+          "P@1": 0.875,
+          "P@3": 1.0,
+          "MRR@1": 0.875,
+          "MRR@3": 0.9375
+        },
+        "exact_en": {
+          "count": 9,
+          "P@1": 0.8889,
+          "P@3": 1.0,
+          "MRR@1": 0.8889,
+          "MRR@3": 0.9259
+        },
+        "fuzzy": {
+          "count": 10,
+          "P@1": 0.7,
+          "P@3": 0.9,
+          "MRR@1": 0.7,
+          "MRR@3": 0.7833
+        },
+        "netfn_cmd": {
+          "count": 5,
+          "P@1": 0.6,
+          "P@3": 0.6,
+          "MRR@1": 0.6,
+          "MRR@3": 0.6
+        },
+        "scenario": {
+          "count": 8,
+          "P@1": 0.625,
+          "P@3": 0.875,
+          "MRR@1": 0.625,
+          "MRR@3": 0.75
+        }
+      }
+    },
+    "hybrid_a07": {
+      "total": 40,
+      "P@1": 0.775,
+      "P@3": 0.875,
+      "MRR@1": 0.775,
+      "MRR@3": 0.8167,
+      "by_category": {
+        "exact_cn": {
+          "count": 8,
+          "P@1": 0.875,
+          "P@3": 1.0,
+          "MRR@1": 0.875,
+          "MRR@3": 0.9375
+        },
+        "exact_en": {
+          "count": 9,
+          "P@1": 1.0,
+          "P@3": 1.0,
+          "MRR@1": 1.0,
+          "MRR@3": 1.0
+        },
+        "fuzzy": {
+          "count": 10,
+          "P@1": 0.7,
+          "P@3": 0.9,
+          "MRR@1": 0.7,
+          "MRR@3": 0.7667
+        },
+        "netfn_cmd": {
+          "count": 5,
+          "P@1": 0.6,
+          "P@3": 0.6,
+          "MRR@1": 0.6,
+          "MRR@3": 0.6
+        },
+        "scenario": {
+          "count": 8,
+          "P@1": 0.625,
+          "P@3": 0.75,
+          "MRR@1": 0.625,
+          "MRR@3": 0.6875
+        }
+      }
+    },
+    "hybrid_a05": {
+      "total": 40,
+      "P@1": 0.775,
+      "P@3": 0.875,
+      "MRR@1": 0.775,
+      "MRR@3": 0.825,
+      "by_category": {
+        "exact_cn": {
+          "count": 8,
+          "P@1": 0.875,
+          "P@3": 1.0,
+          "MRR@1": 0.875,
+          "MRR@3": 0.9375
+        },
+        "exact_en": {
+          "count": 9,
+          "P@1": 1.0,
+          "P@3": 1.0,
+          "MRR@1": 1.0,
+          "MRR@3": 1.0
+        },
+        "fuzzy": {
+          "count": 10,
+          "P@1": 0.7,
+          "P@3": 0.8,
+          "MRR@1": 0.7,
+          "MRR@3": 0.75
+        },
+        "netfn_cmd": {
+          "count": 5,
+          "P@1": 0.6,
+          "P@3": 0.8,
+          "MRR@1": 0.6,
+          "MRR@3": 0.7
+        },
+        "scenario": {
+          "count": 8,
+          "P@1": 0.625,
+          "P@3": 0.75,
+          "MRR@1": 0.625,
+          "MRR@3": 0.6875
+        }
+      }
+    },
+    "keyword": {
+      "total": 40,
+      "P@1": 0.825,
+      "P@3": 0.875,
+      "MRR@1": 0.825,
+      "MRR@3": 0.85,
+      "by_category": {
+        "exact_cn": {
+          "count": 8,
+          "P@1": 1.0,
+          "P@3": 1.0,
+          "MRR@1": 1.0,
+          "MRR@3": 1.0
+        },
+        "exact_en": {
+          "count": 9,
+          "P@1": 0.8889,
+          "P@3": 1.0,
+          "MRR@1": 0.8889,
+          "MRR@3": 0.9444
+        },
+        "fuzzy": {
+          "count": 10,
+          "P@1": 0.7,
+          "P@3": 0.8,
+          "MRR@1": 0.7,
+          "MRR@3": 0.75
+        },
+        "netfn_cmd": {
+          "count": 5,
+          "P@1": 0.8,
+          "P@3": 0.8,
+          "MRR@1": 0.8,
+          "MRR@3": 0.8
+        },
+        "scenario": {
+          "count": 8,
+          "P@1": 0.75,
+          "P@3": 0.75,
+          "MRR@1": 0.75,
+          "MRR@3": 0.75
+        }
+      }
+    }
+  },
+  "test_queries": [
+    {
+      "query": "Get CPU Reading",
+      "category": "exact_en",
+      "expected_keywords": [
+        "cpu",
+        "reading"
+      ]
+    },
+    {
+      "query": "Set Fan Speed",
+      "category": "exact_en",
+      "expected_keywords": [
+        "fan",
+        "speed"
+      ]
+    },
+    {
+      "query": "Chassis Control",
+      "category": "exact_en",
+      "expected_keywords": [
+        "chassis",
+        "control"
+      ]
+    },
+    {
+      "query": "Get Device ID",
+      "category": "exact_en",
+      "expected_keywords": [
+        "device",
+        "id"
+      ]
+    },
+    {
+      "query": "Get SEL Time",
+      "category": "exact_en",
+      "expected_keywords": [
+        "sel",
+        "time"
+      ]
+    },
+    {
+      "query": "Get BMC Info",
+      "category": "exact_en",
+      "expected_keywords": [
+        "bmc"
+      ]
+    },
+    {
+      "query": "Set BIOS Version",
+      "category": "exact_en",
+      "expected_keywords": [
+        "bios"
+      ]
+    },
+    {
+      "query": "Get Rack Info",
+      "category": "exact_en",
+      "expected_keywords": [
+        "rack"
+      ]
+    },
+    {
+      "query": "Get Power Reading",
+      "category": "exact_en",
+      "expected_keywords": [
+        "power",
+        "reading"
+      ]
+    },
+    {
+      "query": "机箱控制",
+      "category": "exact_cn",
+      "expected_keywords": [
+        "机箱",
+        "控制"
+      ]
+    },
+    {
+      "query": "获取设备ID",
+      "category": "exact_cn",
+      "expected_keywords": [
+        "设备",
+        "id"
+      ]
+    },
+    {
+      "query": "获取SEL时间",
+      "category": "exact_cn",
+      "expected_keywords": [
+        "sel",
+        "时间"
+      ]
+    },
+    {
+      "query": "查询黑名单",
+      "category": "exact_cn",
+      "expected_keywords": [
+        "黑名单"
+      ]
+    },
+    {
+      "query": "获取BMC信息",
+      "category": "exact_cn",
+      "expected_keywords": [
+        "bmc"
+      ]
+    },
+    {
+      "query": "设置BIOS版本",
+      "category": "exact_cn",
+      "expected_keywords": [
+        "bios",
+        "版本"
+      ]
+    },
+    {
+      "query": "获取机柜信息",
+      "category": "exact_cn",
+      "expected_keywords": [
+        "机柜",
+        "机柜信息"
+      ]
+    },
+    {
+      "query": "获取电源功率",
+      "category": "exact_cn",
+      "expected_keywords": [
+        "电源",
+        "功率"
+      ]
+    },
+    {
+      "query": "怎么查看CPU温度",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "cpu"
+      ]
+    },
+    {
+      "query": "如何控制服务器上下电",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "电源",
+        "控制",
+        "chassis"
+      ]
+    },
+    {
+      "query": "配置告警通知",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "告警",
+        "alert"
+      ]
+    },
+    {
+      "query": "查看系统日志",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "日志",
+        "sel"
+      ]
+    },
+    {
+      "query": "管理用户账号",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "用户",
+        "user"
+      ]
+    },
+    {
+      "query": "配置网络IP地址",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "网络",
+        "ip",
+        "lan"
+      ]
+    },
+    {
+      "query": "风扇调速策略",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "风扇",
+        "fan"
+      ]
+    },
+    {
+      "query": "查看传感器状态",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "传感器",
+        "sensor"
+      ]
+    },
+    {
+      "query": "固件升级",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "固件",
+        "firmware"
+      ]
+    },
+    {
+      "query": "BMC重启",
+      "category": "fuzzy",
+      "expected_keywords": [
+        "bmc",
+        "重启",
+        "reset"
+      ]
+    },
+    {
+      "query": "NetFn 30h CMD 92h",
+      "category": "netfn_cmd",
+      "expected_keywords": [
+        "30h",
+        "92h"
+      ]
+    },
+    {
+      "query": "NetFn 0Ch CMD 02h",
+      "category": "netfn_cmd",
+      "expected_keywords": [
+        "0ch",
+        "02h"
+      ]
+    },
+    {
+      "query": "NetFn 2Ch CMD 10h",
+      "category": "netfn_cmd",
+      "expected_keywords": [
+        "2ch",
+        "10h"
+      ]
+    },
+    {
+      "query": "NetFn 06 CMD 01",
+      "category": "netfn_cmd",
+      "expected_keywords": [
+        "06",
+        "01"
+      ]
+    },
+    {
+      "query": "NetFn 32h CMD 39h",
+      "category": "netfn_cmd",
+      "expected_keywords": [
+        "32h",
+        "39h"
+      ]
+    },
+    {
+      "query": "添加一个新的IPMI用户",
+      "category": "scenario",
+      "expected_keywords": [
+        "用户",
+        "user",
+        "add"
+      ]
+    },
+    {
+      "query": "查看所有传感器读数",
+      "category": "scenario",
+      "expected_keywords": [
+        "传感器",
+        "sensor"
+      ]
+    },
+    {
+      "query": "远程开关机",
+      "category": "scenario",
+      "expected_keywords": [
+        "电源",
+        "power",
+        "chassis"
+      ]
+    },
+    {
+      "query": "设置SNMP告警上报",
+      "category": "scenario",
+      "expected_keywords": [
+        "snmp",
+        "告警"
+      ]
+    },
+    {
+      "query": "读取电子标签信息",
+      "category": "scenario",
+      "expected_keywords": [
+        "电子标签"
+      ]
+    },
+    {
+      "query": "配置VNC远程控制",
+      "category": "scenario",
+      "expected_keywords": [
+        "vnc"
+      ]
+    },
+    {
+      "query": "清除系统事件日志SEL",
+      "category": "scenario",
+      "expected_keywords": [
+        "sel",
+        "清除"
+      ]
+    },
+    {
+      "query": "设置MAC地址",
+      "category": "scenario",
+      "expected_keywords": [
+        "mac"
+      ]
+    }
+  ]
+}

@@ -1,3 +1,7 @@
+# [DEPRECATED] 此文件已弃用
+# 领域知识已拆分至 domain/ 目录: domain_user_mgmt.txt / domain_redfish.txt 等
+# 详见 judge_agent.py _resolve_domain_modules()
+
 # openUBMC 领域知识
 
 ## 用户管理边界规则（关键规则）
